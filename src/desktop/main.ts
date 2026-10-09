@@ -1,3 +1,5 @@
+import { contextPolicy, estimateTokens, historyContext } from '../domains/conversation/context-budget';
+import { foregroundPrompt, foregroundTools } from '../domains/conversation/tools';
 import { TextModelStore } from '../domains/models/settings';
 import { TextAgent } from '../domains/conversation/text-agent';
 import type { PlatformExecute } from '../domains/conversation/tools';
@@ -75,7 +77,8 @@ app.whenReady().then(() => {
     if (name === 'cancel_task') { await execution.cancel(string(input.taskId)); return workspace.snapshot().tasks.find(task => task.id === input.taskId); }
     throw new Error('Unsupported tool');
   };
-  const history = () => JSON.stringify(workspace.snapshot().messages.filter(m => m.role !== 'system').slice(-20).map(m => ({ role: m.role, channel: m.channel, at: m.createdAt, text: m.text.slice(0, 2000) })));
+  const history = () => historyContext(workspace.snapshot().messages,
+    contextPolicy.voiceHistoryTokens - estimateTokens({ instructions: foregroundPrompt, tools: foregroundTools }));
   const voice = new RealtimeVoice(emitVoice, executePlatform, undefined, history);
   const modelSettings = new TextModelStore(db, {
     encrypt: value => { if (!safeStorage.isEncryptionAvailable() || process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') throw new Error('系统密钥存储不可用，无法保存 API Key。'); return safeStorage.encryptString(value).toString('base64'); },
@@ -84,7 +87,7 @@ app.whenReady().then(() => {
   const emitChat = (event: ChatEvent) => { if (window && !window.isDestroyed()) window.webContents.send('chat:event', event); };
   const textAgent = new TextAgent(db, modelSettings, executePlatform, emitChat, (role, text) => {
     workspace.recordInteraction(role, text, 'text'); voice.refreshHistory(); window?.webContents.send('workspace:changed');
-  }, () => JSON.stringify(workspace.snapshot().messages.filter(m => m.channel !== 'text' && m.role !== 'system').slice(-20).map(m => ({ role: m.role, channel: m.channel, at: m.createdAt, text: m.text.slice(0, 2000) }))));
+  }, () => historyContext(workspace.snapshot().messages.filter(m => m.channel !== 'text'), contextPolicy.textWindowTokens / 4));
   handle('model:read', () => modelSettings.public());
   handle('model:save', value => { if (textAgent.busy) throw new Error('请先停止当前文本回复，再修改模型。'); return modelSettings.save(value as TextModelInput); });
   handle('chat:stop', () => textAgent.stop());

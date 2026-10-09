@@ -30,7 +30,7 @@ npm start
 ## 当前能力
 
 - Electron + React 桌面主入口、任务、团队、文件和设置页面。
-- 前台文本使用 Pi Agent Core＋本地配置的文本模型，实时语音独立使用 Qwen；共用平台工具，可查询、保存需求、创建团队、派发、回答执行问题和取消。
+- 前台文本使用 Pi Session SDK＋本地配置的文本模型，实时语音独立使用 Qwen；共用平台工具，可查询、保存需求、创建团队、派发、回答执行问题和取消。
 - 本地 Codex 执行者 → 独立检查者 → 用户验收；支持修改后再次执行、真实成果打开和持久事件查看。
 - 每个任务独立工作目录，每个角色独立原生会话；重启遇到未知执行先停放，由用户核对停止后恢复。
 - 导入文件式 OpenRig Context Pack，按 manifest、atoms、依赖、运行时和情境组装上下文。
@@ -76,12 +76,16 @@ npm start
 
 在“设置 → 文本交互模型”配置协议、服务地址、模型 ID 和 API Key。支持 Chat Completions、Responses 与 Anthropic Messages；兼容的本机服务可使用 HTTP，无鉴权服务可留空密钥。模型需要支持工具调用。
 
-文本使用 Pi Agent Core 1.1.0（当前官方包 @earendil-works/pi-agent-core），只注册 Orbit 平台工具，不加载文件编辑、终端或完整 coding-agent CLI。文本配置未完成时显示提示，不回退到 Qwen。语音仍使用 .env 中独立的 Qwen 配置。
+文本使用 Pi 1.1.0 的 Session SDK（@earendil-works/pi-coding-agent），复用原生会话与自动压缩。只启用 Orbit 平台工具，禁用内置 coding 工具、扩展、MCP、skills 和项目上下文发现，不启动 CLI。文本配置未完成时显示提示，不回退到 Qwen。语音仍使用 .env 中独立的 Qwen 配置。
 
 密钥使用 Electron safeStorage 加密保存于本机，不通过读取接口返回。更换地址或协议会清除旧密钥，防止误发给新服务。修改模型在下次文本请求生效；回复期间先停止再修改。“停止回复”只停止前台推理，不撤销已经派发的后台任务。
 
-文本保留完整工具调用/结果配对，下一轮恢复最近最多 12 个用户轮次，按字符预算进一步缩减旧轮次；对话展示记录单独持久保存。当前不自动总结超长单轮。
+Pi 工作窗口设为 256K（262,144 tokens），原生 compaction 开启：预留 16,384 tokens，超过 245,760 tokens 时压缩，保留约 20,000 tokens 的近期消息。Pi 原生 Session entries（包含工具结果、摘要和保留边界）持久化到本地 SQLite；原始条目不因压缩而删除。旧版 textTranscript 首次使用时迁移。
 
 node scripts/text-smoke.mjs 使用本地 SSE 测试服务，验证真实 Pi 工具循环、模型配置、密钥状态、重启以及不使用 Qwen；不产生云端用量。
 
 语音用户转写与 Qwen 回复都会作为 voice 消息写入同一份持久 History；文本消息标记为 text，任务通知标记为 platform。Pi 每轮读取最近的跨通道历史，Qwen 新连接读取同一历史；已有 Qwen 连接在空闲时更新历史，不额外触发播报。切换通道不会清空对话。
+
+Qwen 的平台历史注入预算为估算 16K tokens（包含系统提示与工具定义预算），并设置官方 max_history_turns=8。该参数限制原生语音历史轮次，不是音频/文本合计 16K 的服务端硬 Token 上限。模型实际支持的窗口仍以服务商为准；Orbit 配置不会扩容服务端模型。
+
+压缩由 Pi 在安全轮次边界执行，UI 显示“正在整理上下文”。SDK 原生处理超限恢复与工具配对；压缩失败不写入替代摘要，已保存原文仍可恢复。当前还没有 Room 级 search_history/read_history 工具，不能把保留原文说成已能主动检索。

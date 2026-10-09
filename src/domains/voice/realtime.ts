@@ -1,3 +1,4 @@
+import { contextPolicy } from '../conversation/context-budget';
 import { foregroundPrompt, foregroundTools } from '../conversation/tools';
 import WebSocket from 'ws';
 import type { VoiceEvent } from '../../contracts';
@@ -28,6 +29,7 @@ export class RealtimeVoice {
     this.emit({ type: 'state', state: 'connecting' });
     const timeout = setTimeout(() => { if (this.socket === ws && !this.ready) { this.emit({ type: 'error', text: '语音连接超时，请重试。' }); this.stop(); } }, 15000);
     ws.on('open', () => { if (this.socket !== ws) return; this.send({ type: 'session.update', session: {
+      max_history_turns: contextPolicy.voiceHistoryTurns,
       modalities: ['text', 'audio'], voice: 'longanqian_v3.1', turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 700 },
       instructions: foregroundPrompt + this.history(),
       tools: foregroundTools,

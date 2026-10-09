@@ -90,3 +90,63 @@ test('text cancellation aborts a pending provider request and releases the foreg
     assert.equal(agent.busy, false); assert.equal(calls, 0);
   } finally { await agent.stop(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); db.close(); }
 });
+
+test('native Pi threshold compaction persists a summary and raw history, then restores the compacted session', async () => {
+  const requests: any[] = [];
+  const server = createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk; requests.push(JSON.parse(body));
+    const text = JSON.stringify(requests.at(-1).messages).includes('context summarization assistant') ? '## Goal\n保留原始预算约束：两千元。\n## Next Steps\n继续产品发布计划。' : '继续沿用两千元预算。';
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) + '\n\n');
+    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const db = openDatabase(':memory:'), store = new TextModelStore(db, codec);
+  store.save({ protocol: 'openai-completions', baseUrl: 'http://127.0.0.1:' + (server.address() as { port: number }).port + '/v1', model: 'compact-test' });
+  const legacy = Array.from({ length: 16 }, (_, i) => ({ role: 'user', content: (i === 0 ? '原始预算两千元。' : '补充需求。') + 'history '.repeat(250), timestamp: i }));
+  db.prepare('INSERT INTO settings VALUES (?,?)').run('textTranscript', JSON.stringify(legacy));
+  const events: ChatEvent[] = [];
+  const create = () => new TextAgent(db, store, () => ({}), e => events.push(e), () => {}, () => '', { contextWindow: 8192, reserveTokens: 4096, keepRecentTokens: 512 });
+  const agent = create();
+  try {
+    await agent.send('请继续');
+    assert.ok(events.some(e => e.type === 'compaction' && e.active), JSON.stringify(events));
+    assert.equal(events.some(e => e.type === 'error'), false, JSON.stringify(events));
+    const entries = JSON.parse(String(db.prepare('SELECT value FROM settings WHERE key=?').get('piSessionEntries')!.value));
+    const compaction = entries.find((e: any) => e.type === 'compaction');
+    assert.ok(compaction); assert.ok(compaction.summary.includes('两千元'));
+    assert.ok(entries.some((e: any) => e.type === 'message' && JSON.stringify(e.message).includes('原始预算两千元')));
+    const header = entries.find((e: any) => e.type === 'session').id;
+    await create().send('重启后继续');
+    const restored = JSON.parse(String(db.prepare('SELECT value FROM settings WHERE key=?').get('piSessionEntries')!.value));
+    assert.ok(!JSON.stringify(requests.at(-1).messages).includes('原始预算两千元。'));
+    assert.ok(requests.at(-1).messages.length < legacy.length);
+    assert.equal(restored.find((e: any) => e.type === 'session').id, header);
+    assert.ok(restored.some((e: any) => e.type === 'compaction' && e.id === compaction.id));
+    assert.ok(JSON.stringify(requests.at(-1).messages).includes('两千元'));
+  } finally { await agent.stop(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); db.close(); }
+});
+
+test('failed native compaction leaves the original persisted history without a replacement summary', async () => {
+  const server = createServer(async (req, res) => {
+    for await (const _chunk of req) { /* drain */ }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('data: ' + JSON.stringify({ id: 'incomplete', choices: [{ index: 0, delta: { content: 'incomplete summary' }, finish_reason: 'length' }] }) + '\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const db = openDatabase(':memory:'), store = new TextModelStore(db, codec);
+  store.save({ protocol: 'openai-completions', baseUrl: 'http://127.0.0.1:' + (server.address() as { port: number }).port + '/v1', model: 'compact-fail' });
+  const legacy = Array.from({ length: 16 }, (_, i) => ({ role: 'user', content: 'original-' + i + ' history'.repeat(250), timestamp: i }));
+  db.prepare('INSERT INTO settings VALUES (?,?)').run('textTranscript', JSON.stringify(legacy));
+  const events: ChatEvent[] = [];
+  const agent = new TextAgent(db, store, () => ({}), e => events.push(e), () => {}, () => '', { contextWindow: 8192, reserveTokens: 4096, keepRecentTokens: 512 });
+  try {
+    await agent.send('continue');
+    assert.ok(events.some(e => e.type === 'error'));
+    const entries = JSON.parse(String(db.prepare('SELECT value FROM settings WHERE key=?').get('piSessionEntries')!.value));
+    assert.ok(!entries.some((e: any) => e.type === 'compaction'));
+    for (let i = 0; i < 16; i++) assert.ok(entries.some((e: any) => e.type === 'message' && JSON.stringify(e.message).includes('original-' + i)));
+  } finally { await agent.stop(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); db.close(); }
+});

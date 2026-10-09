@@ -104,4 +104,4 @@ export interface TextModelInput {
   clearKey?: boolean;
 }
 export interface TextModelSettings { protocol: TextModelProtocol; baseUrl: string; model: string; hasKey: boolean }
-export type ChatEvent = { type: 'state'; busy: boolean } | { type: 'delta'; text: string } | { type: 'error'; text: string };
+export type ChatEvent = { type: 'compaction'; active: boolean } | { type: 'state'; busy: boolean } | { type: 'delta'; text: string } | { type: 'error'; text: string };

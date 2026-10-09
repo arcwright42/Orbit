@@ -18,6 +18,7 @@ test('voice gates audio on session readiness, executes completed tools only, and
   const voice = new RealtimeVoice(e => events.push(e), name => { calls.push(name); return { status: 'pending' }; }, () => { const ws = new Socket(); sockets.push(ws); return ws as unknown as WebSocket; });
   voice.start(); const first = sockets[0]; first.emit('open');
   voice.audio(new Uint8Array(1280)); assert.equal(first.sent.length, 1);
+  assert.equal((first.sent[0].session as { max_history_turns: number }).max_history_turns, 8);
   first.receive({ type: 'session.updated' }); voice.audio(new Uint8Array(1280)); assert.equal(first.sent.length, 2);
   first.receive({ type: 'response.function_call_arguments.done', call_id: 'one', name: 'list_tasks', arguments: '{}' });
   assert.equal(calls.length, 0);
