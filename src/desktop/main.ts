@@ -1,4 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { loadEnvFile } from 'node:process';
+import { randomUUID } from 'node:crypto';
+import { RealtimeVoice } from '../domains/voice/realtime';
+import { WakeDetector } from '../domains/voice/wake';
+import type { VoiceEvent } from '../contracts';
+import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -6,6 +11,7 @@ import { openDatabase } from '../infrastructure/database';
 import { MaterialLibrary } from '../domains/materials/library';
 import { WorkspaceService } from '../application/workspace';
 
+try { loadEnvFile(resolve(__dirname, '../.env')); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 app.setName('Orbit');
 if (process.env.ORBIT_DATA_DIR) app.setPath('userData', resolve(process.env.ORBIT_DATA_DIR));
 const dataDir = app.getPath('userData');
@@ -30,6 +36,35 @@ app.whenReady().then(() => {
       return action(...args);
     });
   };
+  const emitVoice = (event: VoiceEvent) => { if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
+  const voice = new RealtimeVoice(emitVoice, (name, args) => {
+    if (name === 'list_tasks') return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
+    if (name === 'save_request' && args && typeof args === 'object' && 'text' in args && typeof args.text === 'string') {
+      const requestId = randomUUID();
+      const snapshot = workspace.submit({ requestId, text: args.text, attachmentIds: [] });
+      return { task: snapshot.tasks.find(task => task.requestId === requestId), executed: false };
+    }
+    throw new Error('Unsupported tool');
+  });
+  let wake: WakeDetector | undefined;
+  let voiceGeneration = 0;
+  const stopVoice = () => { voiceGeneration++; wake = undefined; voice.stop(); };
+  handle('voice:start', async value => {
+    if (typeof value !== 'boolean') throw new Error('Invalid voice mode');
+    const generation = ++voiceGeneration;
+    wake = undefined; voice.stop(false);
+    if (process.platform === 'darwin' && !await systemPreferences.askForMediaAccess('microphone')) throw new Error('请在系统设置中允许 Orbit 使用麦克风。');
+    if (generation !== voiceGeneration) return;
+    if (value) { wake = new WakeDetector(resolve(__dirname, '../assets/voice')); emitVoice({ type: 'state', state: 'waiting' }); }
+    else voice.start();
+  });
+  handle('voice:stop', stopVoice);
+  handle('voice:audio', value => {
+    if (!(value instanceof Uint8Array) || value.length > 8192 || value.length % 2) throw new Error('Invalid audio frame');
+    if (wake) { if (wake.accept(value)) { wake = undefined; window?.show(); voice.start(); } }
+    else voice.audio(value);
+  });
+  app.on('before-quit', stopVoice);
   handle('workspace:read', () => workspace.snapshot());
   handle('workspace:submit', input => workspace.submit(input));
   handle('task:cancel', id => workspace.cancelTask(id));
@@ -55,8 +90,10 @@ app.whenReady().then(() => {
       width: 1280, height: 860, minWidth: 900, minHeight: 650,
       title: 'Orbit', backgroundColor: '#fcfcfc', titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 20, y: 20 },
-      webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+      webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
     });
+    window.webContents.on('did-start-loading', stopVoice);
+    window.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => { callback(contents === window?.webContents && permission === 'media' && 'mediaTypes' in details && details.mediaTypes?.every((type: string) => type === 'audio') === true); });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
     window.on('close', event => {

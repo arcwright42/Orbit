@@ -212,3 +212,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline-colo
 .compact-task-row > svg, .compact-task-row time { color: #a0a0a0; font-size: 10px; }
 .row-attachments { display: flex; gap: 4px; align-items: center; color: #999; font-size: 10px; }
 .list-empty { color: #aaa; font-size: 11px; padding: 0 15px; margin: 14px 0 22px; }
+
+.voice-panel { position: fixed; right: 28px; bottom: 24px; z-index: 20; width: 360px; max-height: 300px; padding: 18px; background: #fff; border: 1px solid #e8e8e8; border-radius: 18px; box-shadow: 0 8px 40px #0000000d; }
+.voice-heading { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.voice-heading .secondary-button { margin-left: auto; font-size: 12px; padding: 6px 9px; }
+.voice-transcripts { overflow: auto; max-height: 200px; font-size: 13px; color: #666; }
+.voice-transcripts p { line-height: 1.6; }

@@ -1,0 +1,2 @@
+HH EY1 AO1 R B AH0 T :1.0 #0.25 @HeyOrbit
+HH EY1 AO1 R B IH0 T :1.0 #0.25 @HeyOrbit
