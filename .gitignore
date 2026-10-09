@@ -8,3 +8,6 @@ artifacts/
 .env
 .env.*
 !.env.example
+
+assets/voice/*.onnx
+assets/voice/tokens.txt
