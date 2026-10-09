@@ -20,6 +20,10 @@ function decode(row: Record<string, unknown>): QueueItem {
  * Named sessions are opaque identities, never derived from UI labels or runtime session IDs.
  */
 export class ExecutionQueue {
+  private claimable: (item: QueueItem) => boolean = () => true;
+  setClaimGuard(guard: (item: QueueItem) => boolean) { this.claimable = guard; }
+  private projector?: (item: QueueItem, result: ExecutionResult) => void;
+  setProjector(projector: (item: QueueItem, result: ExecutionResult) => void) { this.projector = projector; }
   constructor(private db: DatabaseSync) {
     db.exec('CREATE TABLE IF NOT EXISTS queue_pauses (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS queue_wakes (item_id TEXT PRIMARY KEY REFERENCES execution_queue(id), due_at INTEGER NOT NULL, delay_seconds INTEGER NOT NULL, max_seconds INTEGER NOT NULL)');
@@ -76,7 +80,7 @@ export class ExecutionQueue {
         (item.state === 'blocked' && (item.blockedOn === 'runtime:unknown' || item.cancelRequested)));
       if (reservations.length >= maxConcurrent) return undefined;
       const busy = new Set(reservations.map(item => lane(item.destination)));
-      const next = this.list().find(item => item.state === 'pending' && destinations.includes(item.destination) && !busy.has(lane(item.destination)));
+      const next = this.list().find(item => item.state === 'pending' && this.claimable(item) && destinations.includes(item.destination) && !busy.has(lane(item.destination)));
       if (!next) return undefined;
       this.db.prepare("UPDATE execution_queue SET state = 'in-progress', generation = ?, blocked_on = NULL, updated_at = ? WHERE id = ?")
         .run(randomUUID(), new Date().toISOString(), next.id);
@@ -128,7 +132,9 @@ export class ExecutionQueue {
       } else {
         this.change(item, result.kind === 'canceled' ? 'canceled' : 'failed', item.destination, required(result.reason, 'reason'));
       }
-      return this.get(id);
+      const finished = this.get(id);
+      this.projector?.(finished, result);
+      return finished;
   }
 
   reconcileResult(id: string, generation: string, result: ExecutionResult): QueueItem {

@@ -11,7 +11,7 @@ import type { RuntimeEvidence } from '../runtime/codex';
  * Evidence-keyed versions make replay idempotent. Originals stay in recap-superseded.
  */
 export class TeamKnowledge {
-  constructor(private memory: MemoryStore, private teams: TeamRegistry, private db: DatabaseSync) { db.exec('CREATE TABLE IF NOT EXISTS seat_recaps (seq INTEGER PRIMARY KEY AUTOINCREMENT, record_key TEXT NOT NULL UNIQUE, seat_id TEXT NOT NULL, content TEXT NOT NULL)'); }
+  constructor(private memory: MemoryStore, private teams: TeamRegistry, private db: DatabaseSync) { db.exec('CREATE TABLE IF NOT EXISTS knowledge_projections (record_key TEXT PRIMARY KEY)'); db.exec('CREATE TABLE IF NOT EXISTS seat_recaps (seq INTEGER PRIMARY KEY AUTOINCREMENT, record_key TEXT NOT NULL UNIQUE, seat_id TEXT NOT NULL, content TEXT NOT NULL)'); }
   record(seat: Seat, item: QueueItem, evidence: RuntimeEvidence) {
     const root = this.teams.seatRoot(seat); mkdirSync(join(root, 'recap-superseded'), { recursive: true });
     const key = `${item.id}-${item.generation}`;
@@ -26,6 +26,7 @@ export class TeamKnowledge {
       if (!this.memory.list(scope).some(m => m.key === key)) this.memory.put({ scope, key, taxonomy: 'lore', content: `[${seat.role}] ${evidence.lessons}`, sourceRef: item.evidenceRef! }, 0);
       this.atomic(join(root, 'LEARNED.md'), this.memory.list(scope).filter(m => m.enabled && m.content.startsWith(`[${seat.role}]`)).map(m => `## ${m.key}\n来源：${m.sourceRef}\n${m.content}`).join('\n\n'));
     }
+    this.db.prepare('INSERT OR IGNORE INTO knowledge_projections VALUES (?)').run(key);
   }
   context(seat: Seat, query: string) {
     const root = this.teams.seatRoot(seat); mkdirSync(root, { recursive: true });

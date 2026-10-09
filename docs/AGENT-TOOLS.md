@@ -50,4 +50,22 @@
 
 配置使用 members、edges、workflow（entry、steps、max_hops）。步骤支持 actor_role、objective、depends_on、review、allowed_exits、next_hop.on.done/failed、human:user gate。仅 Codex；未知配置字段拒绝处理。
 
-这是 Orbit 的有界工作流配置，不宣称可直接导入任意 OpenRig rigspec。handoff 转移当前义务、waiting 停放当前义务；这两个结果目前不能用 next_hop 映射成新步骤。复杂异常路由、运行时拓扑修改、任意上游模板转换仍需独立实现，不能靠工具名称宣称已支持。
+这是 Orbit 的有界工作流配置，不宣称可直接导入任意 OpenRig rigspec。handoff 转移当前义务、waiting 停放当前义务；这两个结果目前不能用 next_hop 映射成新步骤。完整上游异常策略、运行时拓扑修改、任意上游模板转换仍需独立实现，不能靠工具名称宣称已支持。
+
+
+## 后台 Codex 工具
+
+后台成员通过原生命令工具调用随应用打包的 `orbit-agent.cjs`，使用当前执行代次专属的本机接口。无需再套一层 Agent harness。
+
+| 工具 | 范围与行为 |
+| --- | --- |
+| list_work / get_work | 当前任务的执行义务与状态 |
+| get_team | 本团队角色和经过审核隔离过滤的交接目标 |
+| search_team_memory / read_team_memory | 本团队经验及来源 |
+| report_progress | 写入当前义务的进度事件 |
+| handoff_work / wait_work / request_help | 准备交接、等待或用户提问 |
+| complete_work | 准备成果、审核结论、经验或异常恢复建议 |
+
+结束类工具只准备意图；原生进程正常退出、成果核验通过后才提交。重复 requestId 幂等，冲突意图拒绝；凭证在进程结束时撤销。业务接口校验任务、团队、执行代次及取消状态。为了访问本机接口，Codex workspace-write 启用 network_access；这不是只允许回环网络的防火墙配置。
+
+工作流可配置 `exception_routing: { orchestrator_role: "coordinator", default: "orchestrator", classes: { stuck_overdue: "human_only" } }`。协调者必须是声明的团队成员。缺省/类级路由支持 orchestrator、human_only；未声明协调者则留给用户处理。人工审批和认证阻塞不能交给模型代批。诊断完成不代表任务完成，只有已停止的执行才能 retry/rotate。

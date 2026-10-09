@@ -1,3 +1,4 @@
+import type { ExceptionRouting } from './exceptions';
 /** Behavioral subset of OpenRig 4b48ca21 workflow-types/projector.
  * Keep authored roles, exits, dependencies and bounded transitions explicit.
  * Unsupported fields fail validation rather than silently promising compatibility.
@@ -11,7 +12,7 @@ export interface WorkflowStep {
   gate?: { target: 'human:user'; summary: string };
   review?: boolean;
 }
-export interface WorkflowSpec { entry: string; steps: WorkflowStep[]; max_hops: number }
+export interface WorkflowSpec { entry: string; steps: WorkflowStep[]; max_hops: number; exception_routing?: ExceptionRouting }
 export interface MemberSpec { role: string; name: string; instructions: string; model?: string }
 export interface TeamConfig { members: MemberSpec[]; edges: { from: string; to: string }[]; workflow: WorkflowSpec }
 export const defaultTeamConfig: TeamConfig = {
@@ -35,10 +36,17 @@ export function validateTeamConfig(input: unknown): TeamConfig {
   const roles = new Set<string>();
   for (const member of c.members) { keys(member, ['role','name','instructions','model']); id(member.role); text(member.name, 80); text(member.instructions); if (member.model !== undefined) text(member.model, 200); if (roles.has(member.role)) throw new Error('Duplicate role'); roles.add(member.role); }
   for (const edge of c.edges) { keys(edge, ['from','to']); if (!roles.has(edge.from) || !roles.has(edge.to)) throw new Error('Unknown edge role'); }
-  const w = c.workflow; if (!w || typeof w !== 'object') throw new Error('Invalid workflow'); keys(w, ['entry','steps','max_hops']);
+  const w = c.workflow; if (!w || typeof w !== 'object') throw new Error('Invalid workflow'); keys(w, ['entry','steps','max_hops','exception_routing']);
   if (!Array.isArray(w.steps) || !w.steps.length || w.steps.length > 64 || !Number.isInteger(w.max_hops) || w.max_hops < 1 || w.max_hops > 1000) throw new Error('Invalid steps/hop limit');
+  if (w.exception_routing) {
+    const policy = w.exception_routing; keys(policy, ['default','orchestrator_role','classes']);
+    if (policy.default && !['orchestrator','human_only'].includes(policy.default)) throw new Error('Invalid exception default');
+    if (policy.orchestrator_role && !roles.has(policy.orchestrator_role)) throw new Error('Unknown orchestrator role');
+    if (policy.classes) { keys(policy.classes, ['unmapped_failed','stuck_overdue']); if (Object.values(policy.classes).some(v => !['orchestrator','human_only'].includes(v))) throw new Error('Invalid exception policy'); }
+  }
   const steps = new Map<string, WorkflowStep>();
   for (const s of w.steps) { keys(s, ['id','actor_role','objective','depends_on','allowed_exits','next_hop','gate','review']); id(s.id); text(s.objective); if (steps.has(s.id) || !roles.has(s.actor_role)) throw new Error('Duplicate step or unknown role'); if (s.review !== undefined && typeof s.review !== 'boolean') throw new Error('Invalid review flag'); steps.set(s.id, s); }
+  for (const step of w.steps) if (step.review && w.steps.some(s => !s.review && s.actor_role === step.actor_role)) throw new Error('独立审核角色不能同时承担制作步骤');
   if (!steps.has(w.entry)) throw new Error('Unknown workflow entry');
   const exits = ['done','failed','handoff','waiting'];
   for (const s of w.steps) {

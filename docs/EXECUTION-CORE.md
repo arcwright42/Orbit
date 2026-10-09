@@ -40,7 +40,7 @@ TaskExecutionService 保存流程配置快照、步骤运行状态、执行义�
 
 以下明确保留为缺口，不算已完成，也不归为用户确认的产品简化：
 
-- 任意 OpenRig rigspec 的直接导入、全部工作流 schema、异常 orchestrator 路由、运行中增删/迁移成员与复杂 successor 协议。
+- 任意 OpenRig rigspec 的直接导入、全部工作流 schema、host 级异常策略、运行中增删/迁移成员与复杂 successor 协议。
 - next_hop 当前只映射 done/failed。handoff 转移当前义务，waiting 停放；两者映射到新步骤的上游语义尚未移植，配置会拒绝而非忽略。
 - tmux pane/mechanized pull、watchdog 多级提醒与升级策略。现有实现为 Codex 进程调度、持久等待/唤醒、停滞提示和有证据的恢复。
 - 原生登录/信任/资源投影完整 readiness 流程；当前提供运行失败分类和原生进程/结果核对。
@@ -56,8 +56,19 @@ npm run check：类型、离线测试、构建。新增集成覆盖结构化审�
 
 npm run test:desktop：Electron 离线保存、取消、重启、模板选择与创建三角色团队回归。
 
-node scripts/voice-smoke.mjs：本轮完整工具集已被官方 Qwen 实时会话接受，使用合成麦克风完成连接/停止与本地唤醒初始化；不等于已验证语音模型对全部工具的选择质量。
+node scripts/voice-smoke.mjs：前一轮前台完整工具集已被官方 Qwen 实时会话接受，使用合成麦克风完成连接/停止与本地唤醒初始化；不等于已验证语音模型对全部工具的选择质量。
 
 npx tsx scripts/team-execution-smoke.ts：真实已登录 Codex，在隔离目录由执行者创建精确文本文件，独立审核返回结构化结论，记录两份团队经验，用户验收。会使用实际模型额度。本轮已通过。
 
 node scripts/execution-smoke.mjs：另一个需要配置前台模型的全链路测试。本轮没有据后端 Codex 验证推断所有云端前台模型/语音组合都通过；Pi 的工具协议通过本地 SSE 与真实 Pi harness 测试验证。
+
+
+## 本轮一致性与异常对齐
+
+执行队列关闭、后继入队、工作流前沿、hop 计数与 workflow_transitions 在 execution-core.sqlite 的同一事务提交，嵌套调用使用 SAVEPOINT。失败注入覆盖后继插入异常：旧义务不会残留 done。产品任务列表位于另一数据库，属于可重建的展示投影，不宣称跨库事务。文件经验投影在核心提交后执行，记录成功标记并在后续同步重试。
+
+并行路由到汇合点时等待依赖；交接次数每次实际提交只计一次。工作流保留的审核席位不能接手制作，同一个稳定席位也不能审核自己在该任务中做过的成果。
+
+未映射失败与领取后停滞可路由至配置的协调者，按原义务/代次/异常类型去重。诊断本身是可查询、可取消、可恢复的队列义务，消耗 hop 预算。恢复动作支持 retry、rotate、ask_user、abort；自动重试/轮换要求旧执行已经停止，未知进程和人工授权不会被越过。rotate 保存旧原生会话 lineage，但尚不是上游完整 successor prepare/commit 协议。未声明协调者的现有模板继续保留人工处理行为。
+
+后台平台工具实际走短期本机 capability，查询限定任务或团队；结束意图直到 Codex 退出才核验提交。真实 Codex smoke 额外要求执行者和审核者均报告指定进度事件，避免只验证 JSON 最终回执而没有调用工具。

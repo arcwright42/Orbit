@@ -136,6 +136,7 @@ test('Codex adapter keeps full event evidence and recovers a settled generation 
     const binary = join(env.root, 'codex-fixture');
     await writeFile(binary, `#!/usr/bin/env node\nconst fs = require('node:fs'); process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringify({type:'thread.started',thread_id:'native-test-123456'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'first message'}})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'second message'}})); fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1], JSON.stringify({outcome:'completed',summary:'verified',question:'',artifacts:[],verdict:'pass',recap:'decision',lessons:'lesson'})); });`); await chmod(binary, 0o700);
     const task = env.task(), seat = env.service.teams.taskSeats(env.team.id, task.id)[0];
+    env.service.queue.setClaimGuard(() => true);
     env.service.queue.enqueue({ requestId: 'adapter-recovery', taskId: task.id, source: 'user', destination: seat.sessionId, body: 'verify' });
     const item = env.service.queue.claimNext([seat.sessionId], 1)!;
     const root = join(env.root, 'evidence'); const adapter = new CodexRuntime(env.service.teams, seat.sessionId, root, () => {}, undefined, binary);
@@ -153,4 +154,118 @@ test('selected project cannot redirect task records outside its root through .or
   const root = await mkdtemp(join(tmpdir(), 'orbit-workspace-boundary-'));
   try { const project = join(root, 'project'), outside = join(root, 'outside'); await mkdir(project); await mkdir(outside); await symlink(outside, join(project, '.orbit')); await assert.rejects(() => taskDirectory(project, 'task'), /越出/); assert.deepEqual(await readdir(outside), []); }
   finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('conditional route into a join waits for the other parallel dependency', async () => {
+  const config: TeamConfig = { members: ['a','b','join'].map(role => ({ role,name:role,instructions:role })), edges: [{from:'a',to:'join'}], workflow: {entry:'a',max_hops:5,steps:[
+    {id:'a',actor_role:'a',objective:'a',depends_on:[],next_hop:{on:{done:'join'}}},
+    {id:'b',actor_role:'b',objective:'b',depends_on:[]}, {id:'join',actor_role:'join',objective:'join',depends_on:['a','b']},
+  ]}};
+  let release!: () => void; const gate = new Promise<void>(r => {release=r;}); const calls: string[]=[];
+  const env=await setup(seat=>({async execute(item){calls.push(seat.role);if(seat.role==='b')await gate;return completed(seat,item);},async cancel(){release();return true;}}),config);
+  try {const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.queue.list().some(i=>i.state==='done');});assert.equal(env.workspace.snapshot().tasks[0].status,'running');assert.ok(!calls.includes('join'));release();await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.equal(calls.filter(r=>r==='join').length,1);}
+  finally {release();await env.close();}
+});
+
+test('three handoffs allow A -> B -> C -> D independently of projection polling', async () => {
+  const roles=['a','b','c','d']; const config:TeamConfig={members:roles.map(role=>({role,name:role,instructions:role})),edges:roles.slice(0,-1).map((r,i)=>({from:r,to:roles[i+1]})),workflow:{entry:'a',max_hops:3,steps:[{id:'a',actor_role:'a',objective:'a'}]}};
+  let env:Awaited<ReturnType<typeof setup>>;const calls:string[]=[];
+  env=await setup(seat=>({async execute(item){calls.push(seat.role);await env.service.sync();if(seat.role!=='d')return {kind:'handoff',destination:env.service.teams.taskSeats(seat.teamId,item.taskId).find(s=>s.role===roles[roles.indexOf(seat.role)+1])!.sessionId,body:'continue',reason:'handoff'};return completed(seat,item);},async cancel(){return true;}}),config);
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.deepEqual(calls,roles);}finally{await env.close();}
+});
+
+test('author cannot delegate actual work to the reserved reviewer session', async () => {
+  let env:Awaited<ReturnType<typeof setup>>; const calls:string[]=[];
+  env=await setup(seat=>({async execute(item){calls.push(seat.role);if(seat.role==='builder')return {kind:'handoff',destination:env.service.teams.taskSeats(seat.teamId,item.taskId).find(s=>s.role==='reviewer')!.sessionId,body:'do author work',reason:'delegate'};return completed(seat,item);},async cancel(){return true;}}));
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='failed';});assert.deepEqual(calls,['builder']);assert.equal(env.service.queue.list().length,1);}finally{await env.close();}
+});
+
+test('successor insertion failure rolls back queue completion, frontier and workflow trail together', async () => {
+  const env=await setup(seat=>({execute:item=>completed(seat,item),async cancel(){return true;}}));
+  try {
+    const core=(env.service as unknown as {db:import('node:sqlite').DatabaseSync}).db;
+    core.exec(`CREATE TRIGGER reject_reviewer BEFORE INSERT ON execution_queue WHEN NEW.request_id LIKE '%:reviewer:%' BEGIN SELECT RAISE(ABORT,'injected successor failure'); END`);
+    const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='failed';});
+    const rows=env.service.queue.list();assert.equal(rows.length,1);assert.equal(rows[0].state,'failed');
+    const trails=core.prepare('SELECT exit FROM workflow_transitions WHERE task_id=?').all(task.id);assert.deepEqual(trails.map(r=>r.exit),['failed']);
+    const flow=JSON.parse(String(core.prepare('SELECT payload FROM task_flows WHERE task_id=?').get(task.id)!.payload));assert.equal(flow.runs.reviewer.state,'dormant');assert.equal(flow.hops,0);
+  }finally{await env.close();}
+});
+
+test('exception coordinator retries stopped work without completing the original obligation', async () => {
+  const config = structuredClone(defaultTeamConfig);
+  config.members.push({role:'coordinator',name:'协调',instructions:'诊断'});
+  config.workflow.exception_routing = {orchestrator_role:'coordinator'};
+  const calls: string[] = []; let attempts = 0;
+  const env = await setup(seat => ({ async execute(item) {
+    calls.push(seat.role);
+    if (seat.role === 'builder' && attempts++ === 0) return {kind:'failed',reason:'temporary failure'};
+    return completed(seat,item,seat.role === 'coordinator' ? {recoveryAction:'retry'} : {});
+  }, async cancel() { return true; } }),config);
+  try {
+    const task = env.task(); await env.service.dispatch(task.id,env.team.id);
+    await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'review'; });
+    assert.deepEqual(calls,['builder','coordinator','builder','reviewer']);
+    assert.equal(env.service.queue.list().length,3);
+    assert.ok(env.service.queue.list().every(i => i.state === 'done'));
+  } finally { await env.close(); }
+});
+
+test('human and authentication gates cannot be delegated to exception coordinators', async () => {
+  const { exceptionTarget } = await import('../src/domains/workflows/exceptions');
+  const policy = {orchestrator_role:'coordinator'};
+  assert.equal(exceptionTarget(policy,'human_gate_trip'),undefined);
+  assert.equal(exceptionTarget(policy,'unmapped_failed','auth:login'),undefined);
+  assert.equal(exceptionTarget(policy,'stuck_overdue','human:gate'),undefined);
+  assert.equal(exceptionTarget({...policy, classes:{unmapped_failed:'human_only'}},'unmapped_failed'),undefined);
+  assert.equal(exceptionTarget(policy,'stuck_overdue'),'coordinator');
+});
+
+test('backend tools enforce task/team scope and reject a canceled execution capability', async () => {
+  const { backendAttempt } = await import('../src/application/backend-tools');
+  let env: Awaited<ReturnType<typeof setup>>, foreignId = '', otherMemoryId = '';
+  let checked = false;
+  env = await setup(seat => ({ async execute(item) {
+    const bridge = backendAttempt(env.service.queue,env.service.teams,env.service.memory,seat,item,() => []);
+    await bridge.open(); const vars = bridge.environment();
+    const invoke = (name:string,input = {}) => fetch(vars.ORBIT_AGENT_ENDPOINT,{method:'POST',headers:{Authorization:`Bearer ${vars.ORBIT_AGENT_TOKEN}`},body:JSON.stringify({name,input,requestId:crypto.randomUUID()})});
+    try {
+      assert.equal((await invoke('get_work',{itemId:foreignId})).status,400);
+      assert.equal((await invoke('read_team_memory',{memoryId:otherMemoryId})).status,400);
+      assert.equal((await invoke('handoff_work',{destination:'foreign',summary:'invalid'})).status,400);
+      assert.equal((await invoke('complete_work',{summary:'staged'})).status,200);
+      assert.equal(env.service.queue.get(item.id).state,'in-progress');
+      env.service.queue.requestCancel(item.id,'test');
+      assert.equal((await invoke('report_progress',{note:'too late'})).status,400);
+      checked = true;
+      return {kind:'canceled',reason:'test complete'};
+    } finally { await bridge.close(); }
+  }, async cancel() { return true; } }));
+  try {
+    const other = env.service.createTeam('其他团队');
+    otherMemoryId = env.service.memory.put({scope:{kind:'team',id:other.id},key:'private',taxonomy:'lore',content:'private',sourceRef:'test'},0).id;
+    foreignId = env.service.queue.enqueue({requestId:'foreign',taskId:'foreign',source:'user',destination:'foreign',body:'private'}).id;
+    const task = env.task(); await env.service.dispatch(task.id,env.team.id);
+    await until(async () => { await env.service.sync(); return checked; });
+  } finally { await env.close(); }
+});
+
+test('stalled work is diagnosed once and cannot be duplicated while its process is alive', async () => {
+  const config = structuredClone(defaultTeamConfig); config.members.push({role:'coordinator',name:'协调',instructions:'诊断'}); config.workflow.exception_routing = {orchestrator_role:'coordinator'};
+  let builds = 0, diagnoses = 0;
+  const env = await setup(seat => ({ async execute(item,signal) {
+    if (seat.role === 'builder') { builds++; await new Promise<void>(resolve => { if(signal.aborted) resolve(); else signal.addEventListener('abort',() => resolve(),{once:true}); }); return {kind:'canceled',reason:'stopped'}; }
+    diagnoses++; return completed(seat,item,{recoveryAction:'retry'});
+  }, async cancel() { return true; } }),config);
+  try {
+    const task = env.task(); await env.service.dispatch(task.id,env.team.id);
+    await until(async () => builds === 1);
+    const source = env.service.queue.list()[0];
+    const core = (env.service as unknown as {db:import('node:sqlite').DatabaseSync}).db;
+    core.prepare('UPDATE execution_events SET at=? WHERE item_id=?').run(new Date(Date.now()-600000).toISOString(),source.id);
+    await until(async () => { await env.service.sync(); return diagnoses === 1 && env.service.queue.list().some(i => i.id !== source.id && i.state === 'done'); });
+    await env.service.sync(); await env.service.sync();
+    assert.equal(builds,1); assert.equal(diagnoses,1); assert.equal(env.service.queue.get(source.id).state,'in-progress');
+    await env.service.cancel(task.id);
+  } finally { await env.close(); }
 });

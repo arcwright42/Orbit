@@ -38,17 +38,17 @@ test('real application dispatch is deduplicated, task sessions isolated, builder
   } finally { await env.close(); }
 });
 
-test('answer resumes the same task session; canceled completed builder never starts reviewer', async () => {
+test('answer resumes the same task session and cancellation stops pending continuation', async () => {
   let count = 0; const sessions: string[] = [];
-  const env = await setup(seat => ({ async execute() { sessions.push(seat.sessionId); if (++count === 1) return { kind: 'question', question: 'Which output?' }; const evidenceRef = join(seat.workspace, 'result.json'); await writeFile(evidenceRef, JSON.stringify({ summary: 'done', artifacts: [] })); return { kind: 'completed', summary: 'done', evidenceRef }; }, async cancel() { return true; } }));
+  const env = await setup(seat => ({ async execute(_item, signal) { sessions.push(seat.sessionId); if (seat.role === 'reviewer') return new Promise(resolve => signal.addEventListener('abort', () => resolve({ kind: 'canceled', reason: 'stopped' }), { once: true })); if (++count === 1) return { kind: 'question', question: 'Which output?' }; const evidenceRef = join(seat.workspace, 'result.json'); await writeFile(evidenceRef, JSON.stringify({ summary: 'done', artifacts: [] })); return { kind: 'completed', summary: 'done', evidenceRef }; }, async cancel() { return true; } }));
   try {
     const task = env.task('question-test-request'); await env.service.dispatch(task.id, env.team.id);
     await until(async () => { await env.service.sync(); return !!env.service.detail(task.id)?.question; });
     env.service.answer(task.id, 'a text document');
     await until(async () => env.service.queue.list().some(i => i.state === 'done'));
     await env.service.cancel(task.id); await env.service.sync();
-    assert.deepEqual(sessions, [sessions[0], sessions[0]]); assert.equal(env.workspace.snapshot().tasks[0].status, 'canceled');
-    assert.equal(env.service.queue.list().length, 1);
+    assert.equal(sessions[0], sessions[1]); assert.equal(env.workspace.snapshot().tasks[0].status, 'canceled');
+    assert.ok(env.service.queue.list().every(i => ['done','canceled'].includes(i.state)));
   } finally { await env.close(); }
 });
 
@@ -83,24 +83,18 @@ test('native Codex adapter preparation failure is recoverable and never reported
   } finally { await env.close(); }
 });
 
-test('cancel during reviewer preparation closes the task without enqueueing a successor', async () => {
+test('cancel before result commit prevents successor creation', async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }), ready = new Promise<void>(r => { entered = r; });
   const env = await setup(seat => ({ async execute() {
     const evidenceRef = join(seat.workspace, 'result.json');
-    await writeFile(evidenceRef, JSON.stringify({ summary: 'done', artifacts: [] }));
+    await writeFile(evidenceRef, JSON.stringify({ summary: 'done', artifacts: [], verdict: 'pass' })); entered(); await gate;
     return { kind: 'completed', summary: 'done', evidenceRef };
-  }, async cancel() { return true; } }));
+  }, async cancel() { release(); return true; } }));
   try {
-    const task = env.task('handoff-cancel-request');
-    await env.service.dispatch(task.id, env.team.id);
-    await until(async () => env.service.queue.list().some(item => item.state === 'done'));
-    const internal = env.service as unknown as { ensureItem(flow: { phase: string }): Promise<void> };
-    const original = internal.ensureItem.bind(env.service);
-    let entered!: () => void, release!: () => void;
-    const ready = new Promise<void>(r => { entered = r; }), gate = new Promise<void>(r => { release = r; });
-    internal.ensureItem = async flow => { if (flow.phase === 'reviewer') { entered(); await gate; } await original(flow); };
-    const sync = env.service.sync(); await ready;
-    await env.service.cancel(task.id); release(); await sync;
+    const task = env.task('handoff-cancel-request'); await env.service.dispatch(task.id, env.team.id); await ready;
+    await env.service.cancel(task.id); await env.service.sync();
     assert.equal(env.workspace.snapshot().tasks[0].status, 'canceled');
     assert.equal(env.service.queue.list().length, 1);
-  } finally { await env.close(); }
+  } finally { release(); await env.close(); }
 });
