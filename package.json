@@ -22,7 +22,8 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "sherpa-onnx-node": "1.13.8",
-    "ws": "8.22.0"
+    "ws": "8.22.0",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
