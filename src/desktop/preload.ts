@@ -1,7 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { OrbitApi, VoiceEvent } from '../contracts';
+import type { OrbitApi, VoiceEvent, ChatEvent } from '../contracts';
 
 const api: OrbitApi = {
+  textModel: () => ipcRenderer.invoke('model:read'),
+  saveTextModel: input => ipcRenderer.invoke('model:save', input),
+  stopText: () => ipcRenderer.invoke('chat:stop'),
+  onChat: listener => { const handler = (_event: unknown, data: ChatEvent) => listener(data); ipcRenderer.on('chat:event', handler); return () => ipcRenderer.removeListener('chat:event', handler); },
   chatText: (text, ids) => ipcRenderer.invoke('chat:text', text, ids),
   localTeams: () => ipcRenderer.invoke('teams:list'),
   createTeam: name => ipcRenderer.invoke('teams:create', name),

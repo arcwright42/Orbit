@@ -7,6 +7,7 @@ export interface Attachment {
 }
 
 export interface Message {
+  channel?: 'text' | 'voice' | 'platform';
   id: string;
   role: 'user' | 'system' | 'assistant';
   text: string;
@@ -51,6 +52,10 @@ export type ConnectionResult =
   | { state: 'unavailable'; checkedAt: string; reason: string };
 
 export interface OrbitApi {
+  textModel(): Promise<TextModelSettings>;
+  saveTextModel(input: TextModelInput): Promise<TextModelSettings>;
+  stopText(): Promise<void>;
+  onChat(listener: (event: ChatEvent) => void): () => void;
   chatText(text: string, attachmentIds: string[]): Promise<void>;
   localTeams(): Promise<LocalTeamInfo[]>;
   createTeam(name: string): Promise<LocalTeamInfo>;
@@ -78,7 +83,7 @@ export interface OrbitApi {
 }
 
 export type VoiceEvent =
-  | { type: 'state'; state: 'off' | 'waiting' | 'connecting' | 'listening' | 'text' }
+  | { type: 'state'; state: 'off' | 'waiting' | 'connecting' | 'listening' }
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'audio'; data: string }
   | { type: 'interrupt' }
@@ -89,3 +94,14 @@ export interface TaskExecution {
   teamId: string; phase: 'builder' | 'reviewer'; question?: string; summary?: string; artifacts: string[];
   state: string; blockedOn?: string; pickup: string; events: { seq: number; state: string; note: string; at: string }[];
 }
+
+export type TextModelProtocol = 'openai-completions' | 'openai-responses' | 'anthropic-messages';
+export interface TextModelInput {
+  protocol: TextModelProtocol;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  clearKey?: boolean;
+}
+export interface TextModelSettings { protocol: TextModelProtocol; baseUrl: string; model: string; hasKey: boolean }
+export type ChatEvent = { type: 'state'; busy: boolean } | { type: 'delta'; text: string } | { type: 'error'; text: string };

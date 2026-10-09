@@ -16,7 +16,9 @@
 | domains/runtime | Codex 进程启动、恢复、停止与成果证据；外部 OpenRig 只读适配 |
 | domains/context | 文件式 context packs、manifest/atoms/依赖与情境组装 |
 | domains/memory | Orbit 补充的 SQLite scoped 记忆；不代替 context packs |
-| domains/voice | Qwen 文本／语音会话、平台工具、本地关键词唤醒 |
+| domains/conversation | Pi 文本 harness、共享平台工具定义、文本上下文与流式事件 |
+| domains/models | 本地文本模型配置与密钥加密边界 |
+| domains/voice | 独立 Qwen 语音会话、本地关键词唤醒 |
 | domains/tasks / materials / infrastructure | 用户任务、资料副本及 SQLite 初始化 |
 
 ## 执行链路
@@ -31,10 +33,14 @@
 
 Renderer 禁用 Node integration，开启 context isolation/sandbox，只暴露命名应用接口。文件通过系统选择器进入受管理目录；成果由运行适配器校验真实路径归属。密钥仅主进程从忽略的 .env 读取，不传给执行器或 renderer。
 
-文本和语音共用前台会话；异步工具结果回写完成前不生成下一轮响应。麦克风音频通过 AudioWorklet 上传，服务端 VAD 打断播放。本地唤醒阶段仅在本机识别，唤醒后连接云端。真人唤醒率与扬声器回声尚未验收。
+文本和语音是同一个产品入口下的独立模型会话，共用平台工具和持久对话资料。文本由 Pi Agent Core 驱动可配置模型，Qwen 只用于语音；不按失败情况自动切换到另一通道。Pi 保留完整工具结果配对，使用最近用户轮次作为有界上下文。语音的异步工具结果回写完成前不生成下一轮响应。麦克风音频通过 AudioWorklet 上传，服务端 VAD 打断播放。本地唤醒阶段仅在本机识别，唤醒后连接云端。真人唤醒率与扬声器回声尚未验收。
 
 ## 对齐与验证
 
 OpenRig 参考提交为 4b48ca21a9bd072aa05a08b3da6d9c0708e093c5（0.6.9）。逐项行为、当前差异及验证方法见 [执行机制](EXECUTION-CORE.md)。
 
 普通 CI 执行类型检查、离线单元/集成测试和构建。桌面 smoke 使用隔离数据库；execution-smoke 是显式联网测试，覆盖前台工具到真实原生执行与 UI 验收。不能用替身测试代替真实运行证据。
+
+文本模型协议、地址和模型 ID 保存在本地 SQLite；API Key 通过 Electron safeStorage 加密，renderer 只读是否存在。更换协议/地址不沿用旧密钥。Pi 依赖仅主进程动态加载，前台不注册 shell/read/write 工具；后台 Codex 执行适配器保持独立。
+
+History 是应用层持久记录，包含 role、channel、createdAt 和正文。Qwen 完整转写/回复事件与 Pi 回复都写入此记录。Pi 自身工具配对历史单独保存，跨通道资料每轮从共享 History 读取，带角色和时间；运行中的 Qwen 在空闲边界刷新 instructions 中的历史，不主动触发新 response。

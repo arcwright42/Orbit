@@ -14,7 +14,7 @@
 | workflow / handoff | 产品执行者→检查者两阶段流程；稳定阶段 requestId，重启投影；用户验收／返工独立于队列 done |
 | context-packs | 文件 manifest.yaml、声明文件、world/lore/skills/mission、atoms/sections、requires 闭包、作者顺序、runtime/situation、来源与预算报告 |
 
-前台文本／语音模型均有查询、保存、创建团队、派发、回答和取消工具。工具返回真实平台状态，具体文件工作由 Codex 执行。桌面任务详情支持派发、问题回答、重试、取消、修改要求、成果打开和验收。
+前台文本通过 Pi Agent Core 调用本地配置的模型，Qwen 仅处理语音。两者均有查询、保存、创建团队、派发、回答和取消工具。工具返回真实平台状态，具体文件工作由 Codex 执行。桌面任务详情支持派发、问题回答、重试、取消、修改要求、成果打开和验收。
 
 ## 运行、持久化与取消
 
@@ -47,4 +47,4 @@ MemoryStore 是 Orbit 补充能力：显式 personal/team/task scope、来源、
 
 npm run check 覆盖类型、离线测试和构建。核心测试验证 claim 互斥、幂等冲突、优先级、handoff 回滚、代际保护、取消与恢复、scope/版本隔离和上下文预算。新增集成覆盖任务会话隔离、重复派发、执行/检查/验收、问题恢复、取消、关闭、损坏证据隔离和上下文准备错误；语音测试覆盖异步工具等待及旧会话隔离。
 
-node scripts/execution-smoke.mjs 使用真实前台模型与已登录的本地 Codex，在临时数据目录创建 hello.txt，核验精确内容，经过独立检查，最后点击 UI 验收。已在本机通过；需要显式运行并会产生模型用量。npm run test:desktop 保持离线保存、取消和重启回归。
+node scripts/execution-smoke.mjs 使用真实前台模型与已登录的本地 Codex，在临时数据目录创建 hello.txt，核验精确内容，经过独立检查，最后点击 UI 验收。原 Qwen 前台版本已在本机通过；切换 Pi 后需配置 ORBIT_TEST_TEXT_URL/MODEL/KEY 重新运行云端全链路。当前 Pi 路由通过真实 harness＋本地 SSE 服务及桌面测试验证，不宣称已经验证用户选择的云端模型。需要显式运行并会产生模型用量。npm run test:desktop 保持离线保存、取消和重启回归。

@@ -25,9 +25,9 @@ export class WorkspaceService {
     };
   }
 
-  recordInteraction(role: 'user' | 'assistant', text: string) {
+  recordInteraction(role: 'user' | 'assistant', text: string, channel: Message['channel'] = 'platform') {
     if (!text.trim()) return;
-    const message: Message = { id: randomUUID(), role, text: text.slice(0, 64000), createdAt: new Date().toISOString() };
+    const message: Message = { id: randomUUID(), role, channel, text: text.slice(0, 64000), createdAt: new Date().toISOString() };
     this.db.prepare('INSERT INTO interactions VALUES (?,?)').run(message.id, JSON.stringify(message));
   }
   submit(value: unknown): Workspace {

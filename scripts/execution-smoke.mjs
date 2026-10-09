@@ -8,7 +8,10 @@ const env = { ...process.env, ORBIT_DATA_DIR: directory }; delete env.ELECTRON_R
 let app;
 try {
   app = await electron.launch({ args: ['.'], env });
-  const page = await app.firstWindow(); const errors = []; page.on('pageerror', e => errors.push(e.message));
+  const page = await app.firstWindow();
+  if (!process.env.ORBIT_TEST_TEXT_URL || !process.env.ORBIT_TEST_TEXT_MODEL) throw Error('Set ORBIT_TEST_TEXT_URL and ORBIT_TEST_TEXT_MODEL (optional ORBIT_TEST_TEXT_KEY) for the text model; Qwen voice is not used.');
+  await page.evaluate(config => window.orbit.saveTextModel(config), { protocol: 'openai-completions', baseUrl: process.env.ORBIT_TEST_TEXT_URL, model: process.env.ORBIT_TEST_TEXT_MODEL, apiKey: process.env.ORBIT_TEST_TEXT_KEY });
+   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.getByRole('textbox', { name: '你的需求' }).fill('请立即创建一个执行与检查团队，派发任务：在工作目录创建 hello.txt，内容严格为 ORBIT_REAL_EXECUTION_OK。检查者读取核对即可。不需要询问我，使用平台工具实际完成。');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   const end = Date.now() + 240000; let task; let last = '';

@@ -29,7 +29,7 @@ test('voice gates audio on session readiness, executes completed tools only, and
   voice.stop(); first.receive({ type: 'response.audio.delta', delta: 'AAAA' }); assert.equal(events.at(-1)?.type, 'state');
 });
 
-test('text and notifications wait for asynchronous tool outputs; old sessions cannot contaminate new ones', async () => {
+test('voice notifications wait for asynchronous tool outputs; old sessions cannot contaminate new ones', async () => {
   process.env.QWEN_REALTIME_API_KEY = 'test-key';
   process.env.QWEN_REALTIME_URL = 'wss://test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
   class Socket extends EventEmitter {
@@ -40,10 +40,10 @@ test('text and notifications wait for asynchronous tool outputs; old sessions ca
   }
   const sockets: Socket[] = []; let resolve!: (result: unknown) => void;
   const voice = new RealtimeVoice(() => {}, () => new Promise(r => { resolve = r; }), () => { const socket = new Socket(); sockets.push(socket); return socket as unknown as WebSocket; });
-  voice.start(false); const first = sockets[0]; first.receive({ type: 'session.updated' });
+  voice.start(); const first = sockets[0]; first.receive({ type: 'session.updated' });
   first.receive({ type: 'response.function_call_arguments.done', call_id: 'one', name: 'dispatch_task', arguments: '{}' });
   first.receive({ type: 'response.done', response: { status: 'completed' } });
-  voice.text('progress?'); voice.notify('running');
+  voice.notify('progress?'); voice.notify('running');
   assert.equal(first.sent.length, 0);
   resolve({ ok: true }); await Promise.resolve(); await Promise.resolve();
   assert.equal(first.sent[0].item.type, 'function_call_output');
@@ -51,9 +51,32 @@ test('text and notifications wait for asynchronous tool outputs; old sessions ca
   assert.equal(first.sent.filter(e => e.type === 'response.create').length, 1);
   first.receive({ type: 'response.function_call_arguments.done', call_id: 'two', name: 'dispatch_task', arguments: '{}' });
   first.receive({ type: 'response.done', response: { status: 'completed' } });
-  voice.stop(); voice.start(false); const second = sockets[1]; second.receive({ type: 'session.updated' });
+  voice.stop(); voice.start(); const second = sockets[1]; second.receive({ type: 'session.updated' });
   resolve({ stale: true }); await Promise.resolve(); await Promise.resolve();
-  assert.equal(second.sent.length, 0); voice.text('new session');
+  assert.equal(second.sent.length, 0); voice.notify('new session');
   assert.equal(second.sent.at(-1).type, 'response.create');
+  voice.stop();
+});
+
+
+test('an existing voice session refreshes text history at an idle boundary without requesting a voice reply', () => {
+  process.env.QWEN_REALTIME_API_KEY = 'test-key';
+  process.env.QWEN_REALTIME_URL = 'wss://test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
+  class Socket extends EventEmitter {
+    readyState = 1; bufferedAmount = 0; sent: any[] = [];
+    send(data: string) { this.sent.push(JSON.parse(data)); }
+    terminate() { this.emit('close'); }
+    receive(data: unknown) { this.emit('message', Buffer.from(JSON.stringify(data))); }
+  }
+  const socket = new Socket(); let history = 'initial';
+  const voice = new RealtimeVoice(() => {}, () => ({}), () => socket as unknown as WebSocket, () => history);
+  voice.start(); socket.receive({ type: 'session.updated' });
+  socket.receive({ type: 'response.created' });
+  history = 'user typed: continue the voice request; assistant: dispatched';
+  voice.refreshHistory(); assert.equal(socket.sent.length, 0);
+  socket.receive({ type: 'response.done', response: { status: 'completed' } });
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, 'session.update');
+  assert.ok(socket.sent[0].session.instructions.includes(history));
   voice.stop();
 });

@@ -1,3 +1,7 @@
+import { TextModelStore } from '../domains/models/settings';
+import { TextAgent } from '../domains/conversation/text-agent';
+import type { PlatformExecute } from '../domains/conversation/tools';
+import type { TextModelInput, ChatEvent } from '../contracts';
 import { importContextPack, loadContextPack, assembleContextPack, composeContextPack } from '../domains/context';
 import { TaskExecutionService } from '../application/task-execution';
 import { loadEnvFile } from 'node:process';
@@ -5,7 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { RealtimeVoice } from '../domains/voice/realtime';
 import { WakeDetector } from '../domains/voice/wake';
 import type { VoiceEvent } from '../contracts';
-import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { safeStorage, systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -52,8 +56,8 @@ app.whenReady().then(() => {
       return action(...args);
     });
   };
-  const emitVoice = (event: VoiceEvent) => { if (event.type === 'transcript') { workspace.recordInteraction(event.role, event.text); window?.webContents.send('workspace:changed'); } if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
-  const voice = new RealtimeVoice(emitVoice, async (name, args, callId) => {
+  const emitVoice = (event: VoiceEvent) => { if (event.type === 'transcript') { workspace.recordInteraction(event.role, event.text, 'voice'); window?.webContents.send('workspace:changed'); } if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
+  const executePlatform: PlatformExecute = async (name, args, callId) => {
     if (name === 'list_tasks') return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
     if (name === 'save_request' && args && typeof args === 'object' && 'text' in args && typeof args.text === 'string') {
       const requestId = createHash('sha256').update(callId).digest('hex');
@@ -70,7 +74,20 @@ app.whenReady().then(() => {
     if (name === 'answer_task') { execution.answer(string(input.taskId), string(input.answer)); return execution.detail(string(input.taskId)); }
     if (name === 'cancel_task') { await execution.cancel(string(input.taskId)); return workspace.snapshot().tasks.find(task => task.id === input.taskId); }
     throw new Error('Unsupported tool');
-  }, undefined, () => JSON.stringify(workspace.snapshot().messages.filter(m => m.role !== 'system').slice(-20).map(m => ({ role: m.role, text: m.text.slice(0, 2000) }))));
+  };
+  const history = () => JSON.stringify(workspace.snapshot().messages.filter(m => m.role !== 'system').slice(-20).map(m => ({ role: m.role, channel: m.channel, at: m.createdAt, text: m.text.slice(0, 2000) })));
+  const voice = new RealtimeVoice(emitVoice, executePlatform, undefined, history);
+  const modelSettings = new TextModelStore(db, {
+    encrypt: value => { if (!safeStorage.isEncryptionAvailable() || process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') throw new Error('系统密钥存储不可用，无法保存 API Key。'); return safeStorage.encryptString(value).toString('base64'); },
+    decrypt: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
+  });
+  const emitChat = (event: ChatEvent) => { if (window && !window.isDestroyed()) window.webContents.send('chat:event', event); };
+  const textAgent = new TextAgent(db, modelSettings, executePlatform, emitChat, (role, text) => {
+    workspace.recordInteraction(role, text, 'text'); voice.refreshHistory(); window?.webContents.send('workspace:changed');
+  }, () => JSON.stringify(workspace.snapshot().messages.filter(m => m.channel !== 'text' && m.role !== 'system').slice(-20).map(m => ({ role: m.role, channel: m.channel, at: m.createdAt, text: m.text.slice(0, 2000) }))));
+  handle('model:read', () => modelSettings.public());
+  handle('model:save', value => { if (textAgent.busy) throw new Error('请先停止当前文本回复，再修改模型。'); return modelSettings.save(value as TextModelInput); });
+  handle('chat:stop', () => textAgent.stop());
   const reported = new Map(workspace.snapshot().tasks.map(task => [task.id, task.status]));
   reportUpdates = () => {
     for (const task of workspace.snapshot().tasks) {
@@ -96,7 +113,7 @@ app.whenReady().then(() => {
   handle('chat:text', (text, ids) => {
     if (!Array.isArray(ids) || ids.length > 8 || ids.some(id => typeof id !== 'string')) throw new Error('Invalid attachments');
     const files = ids.map(id => materials.require(id).attachment);
-    voice.text(string(text) + (files.length ? `\n已添加资料：${JSON.stringify(files.map(file => ({ id: file.id, name: file.name })))}` : ''));
+    return textAgent.send(string(text) + (files.length ? `\n已添加资料：${JSON.stringify(files.map(file => ({ id: file.id, name: file.name })))}` : ''));
   });
   handle('voice:stop', stopVoice);
   handle('voice:audio', value => {
@@ -173,7 +190,7 @@ app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => { if (!window) createWindow(); window!.show(); });
   let drained = false;
-  app.on('before-quit', event => { if (drained) return; event.preventDefault(); void execution.close().finally(() => { drained = true; db.close(); app.quit(); }); });
+  app.on('before-quit', event => { if (drained) return; event.preventDefault(); void Promise.allSettled([textAgent.stop(), execution.close()]).finally(() => { drained = true; db.close(); app.quit(); }); });
   app.on('second-instance', () => { window?.show(); window?.focus(); });
 });
 app.on('before-quit', () => { quitting = true; });
