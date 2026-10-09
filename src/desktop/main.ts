@@ -53,7 +53,7 @@ app.whenReady().then(() => {
   const createWindow = () => {
     window = new BrowserWindow({
       width: 1280, height: 860, minWidth: 900, minHeight: 650,
-      title: 'Orbit', backgroundColor: '#f9f9f6', titleBarStyle: 'hiddenInset',
+      title: 'Orbit', backgroundColor: '#fcfcfc', titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 20, y: 20 },
       webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
