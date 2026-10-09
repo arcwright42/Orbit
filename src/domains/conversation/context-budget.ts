@@ -25,4 +25,3 @@ export function historyContext(messages: Message[], budget: number): string {
   }
   return JSON.stringify(selected);
 }
-
