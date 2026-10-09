@@ -1,0 +1,49 @@
+import { _electron as electron } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const directory = await mkdtemp(join(tmpdir(), 'orbit-desktop-smoke-'));
+await mkdir('artifacts', { recursive: true });
+const env = { ...process.env, ORBIT_DATA_DIR: directory };
+delete env.ELECTRON_RUN_AS_NODE;
+delete env.ORBIT_DEV_URL;
+let app;
+const errors = [];
+try {
+  app = await electron.launch({ args: ['.'], env });
+  let page = await app.firstWindow();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.getByRole('heading', { name: '今天，我们一起做点什么？' }).waitFor();
+  await page.screenshot({ path: 'artifacts/orbit-home.png' });
+  await page.getByRole('textbox', { name: '你的需求' }).fill('为我的读书笔记设计一个个人网站');
+  await page.getByRole('button', { name: '保存需求', exact: true }).click();
+  await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  await page.getByRole('navigation').getByRole('button', { name: /任务/ }).click();
+  await page.getByRole('button', { name: /为我的读书笔记设计一个个人网站.*待派发/ }).click();
+  await page.getByRole('dialog').waitFor();
+  await page.getByRole('button', { name: '取消这项待派发任务' }).click();
+  await page.getByRole('dialog').getByText('已取消', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '关闭任务详情' }).click();
+  const initial = await page.evaluate(() => window.orbit.workspace());
+  assert.equal(initial.tasks.length, 1);
+  assert.equal(initial.tasks[0].status, 'canceled');
+  await app.close(); app = undefined;
+  app = await electron.launch({ args: ['.'], env });
+  page = await app.firstWindow();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  const restored = await page.evaluate(() => window.orbit.workspace());
+  assert.deepEqual(restored, initial);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByLabel('服务地址').fill('http://127.0.0.1:1');
+  await page.getByRole('button', { name: '保存并检查' }).click();
+  await page.getByRole('status').getByText(/尚未连接/).waitFor();
+  await page.screenshot({ path: 'artifacts/orbit-settings.png' });
+  assert.deepEqual(errors, []);
+  console.log('Desktop smoke passed: intake, task cancellation, restart persistence, unavailable connection; no renderer errors.');
+} finally {
+  if (app) await app.close();
+  await rm(directory, { recursive: true, force: true });
+}
