@@ -232,3 +232,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline-colo
 .text-progress { display: flex; align-items: flex-end; gap: 16px; padding: 12px; font-size: 14px; color: #666; }
 .text-progress span { flex: 1; max-height: 120px; overflow: auto; white-space: pre-wrap; }
 .text-progress button { flex-shrink: 0; }
+
+.connection-input select { border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 12px; background: #fff; color: #555; font: inherit; font-size: 12px; }
+.connection-input + .team-grid { margin-top: 16px; }

@@ -21,7 +21,7 @@ async function until(check: () => Promise<boolean>) { for (let n = 0; n < 100; n
 
 test('real application dispatch is deduplicated, task sessions isolated, builder review and user acceptance distinct', async () => {
   const executions: Seat[] = []; let registrations = 0;
-  const env = await setup(seat => { registrations++; return ({ async execute() { executions.push(seat); const evidenceRef = join(seat.workspace, 'evidence.json'); await writeFile(evidenceRef, JSON.stringify({ summary: seat.role, artifacts: [] })); return { kind: 'completed', summary: seat.role, evidenceRef }; }, async cancel() { return true; } }); });
+  const env = await setup(seat => { registrations++; return ({ async execute() { executions.push(seat); const evidenceRef = join(seat.workspace, 'evidence.json'); await writeFile(evidenceRef, JSON.stringify({ summary: seat.role, artifacts: [], verdict: 'pass' })); return { kind: 'completed', summary: seat.role, evidenceRef }; }, async cancel() { return true; } }); });
   try {
     const first = env.task('first-test-request');
     const attempts = await Promise.allSettled([env.service.dispatch(first.id, env.team.id), env.service.dispatch(first.id, env.team.id)]);
@@ -62,7 +62,7 @@ test('shutdown waits for dispatch and cancellation; close is idempotent', async 
 });
 
 test('invalid evidence is visible and does not block projection of other tasks', async () => {
-  const env = await setup(seat => ({ async execute(item) { const evidenceRef = join(seat.workspace, 'evidence.json'); await writeFile(evidenceRef, item.body.includes('invalid-test') ? 'invalid' : JSON.stringify({ summary: 'valid', artifacts: [] })); return { kind: 'completed', summary: 'done', evidenceRef }; }, async cancel() { return true; } }));
+  const env = await setup(seat => ({ async execute(item) { const evidenceRef = join(seat.workspace, 'evidence.json'); await writeFile(evidenceRef, item.body.includes('invalid-test') ? 'invalid' : JSON.stringify({ summary: 'valid', artifacts: [], verdict: 'pass' })); return { kind: 'completed', summary: 'done', evidenceRef }; }, async cancel() { return true; } }));
   try {
     const bad = env.task('invalid-test-request'), good = env.task('valid-test-request');
     await env.service.dispatch(bad.id, env.team.id); await env.service.dispatch(good.id, env.team.id);
