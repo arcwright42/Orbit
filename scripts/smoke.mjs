@@ -15,12 +15,14 @@ try {
   app = await electron.launch({ args: ['.'], env });
   let page = await app.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
-  await page.getByRole('heading', { name: '今天，我们一起做点什么？' }).waitFor();
+  await page.getByRole('textbox', { name: '你的需求' }).waitFor();
   await page.screenshot({ path: 'artifacts/orbit-home.png' });
   await page.getByRole('textbox', { name: '你的需求' }).fill('为我的读书笔记设计一个个人网站');
   await page.getByRole('button', { name: '保存需求', exact: true }).click();
   await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  await page.getByRole('button', { name: '切换侧栏' }).click();
   await page.getByRole('navigation').getByRole('button', { name: /任务/ }).click();
+  await page.screenshot({ path: 'artifacts/orbit-tasks.png' });
   await page.getByRole('button', { name: /为我的读书笔记设计一个个人网站.*待派发/ }).click();
   await page.getByRole('dialog').waitFor();
   await page.getByRole('button', { name: '取消这项待派发任务' }).click();
