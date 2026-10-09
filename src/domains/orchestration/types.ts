@@ -26,6 +26,7 @@ export interface QueueItem extends Required<EnqueueInput> {
 }
 export interface QueueEvent { seq: number; itemId: string; state: QueueState; actor: string; note: string; at: string }
 export type ExecutionResult =
+  | { kind: 'question'; question: string }
   | { kind: 'completed'; summary: string; evidenceRef: string }
   | { kind: 'blocked'; reason: string; blockedOn: string }
   | { kind: 'failed'; reason: string }

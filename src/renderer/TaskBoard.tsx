@@ -5,6 +5,8 @@ import type { Task } from '../contracts';
 const columns = [
   { id: 'pending', label: '待派发', icon: CircleDashed },
   { id: 'running', label: '进行中', icon: CircleDot },
+  { id: 'blocked', label: '待处理', icon: CircleDashed },
+  { id: 'failed', label: '失败', icon: XCircle },
   { id: 'review', label: '待验收', icon: Circle },
   { id: 'completed', label: '已完成', icon: CheckCircle2 },
   { id: 'canceled', label: '已取消', icon: XCircle },
@@ -43,7 +45,7 @@ export function TaskBoard({ tasks, onSelect, onNew }: { tasks: Task[]; onSelect:
           <div className="column-cards">{items.map(task => <button className="board-card" key={task.id} onClick={() => onSelect(task.id)} aria-label={`${task.title} · ${column.label}`}>
             <span className="card-code">{taskCode(task.id)}</span><h3>{task.title}</h3>
             {task.brief.length > task.title.length && <p>{task.brief.slice(task.title.length).trim()}</p>}
-            <div className="card-metadata"><span className="card-owner" title="尚未分配执行团队"><UserRound size={12} />未分配</span>{task.attachmentIds.length > 0 && <span><Paperclip size={12} />{task.attachmentIds.length}</span>}<time dateTime={task.createdAt}>{dateLabel(task.createdAt)}</time></div>
+            <div className="card-metadata"><span className="card-owner" title={task.teamId ? "已分配执行团队" : "尚未分配执行团队"}><UserRound size={12} />{task.teamId ? "已分配" : "未分配"}</span>{task.attachmentIds.length > 0 && <span><Paperclip size={12} />{task.attachmentIds.length}</span>}<time dateTime={task.createdAt}>{dateLabel(task.createdAt)}</time></div>
           </button>)}{items.length === 0 && <div className="column-empty">{query ? '无匹配任务' : '暂无任务'}</div>}</div>
         </section>;
       })}
