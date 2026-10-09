@@ -218,3 +218,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline-colo
 .voice-heading .secondary-button { margin-left: auto; font-size: 12px; padding: 6px 9px; }
 .voice-transcripts { overflow: auto; max-height: 200px; font-size: 13px; color: #666; }
 .voice-transcripts p { line-height: 1.6; }
+.execution-panel { margin: 20px 0; border-block: 1px solid #eee; padding: 12px 0; }
+.execution-panel button, .execution-panel select { margin: 4px 6px 4px 0; }
+.execution-panel textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 10px; resize: vertical; }
+.execution-panel details { margin-top: 14px; }
+.execution-panel select { max-width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 8px; background: white; }

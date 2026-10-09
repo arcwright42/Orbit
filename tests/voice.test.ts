@@ -5,7 +5,7 @@ import type WebSocket from 'ws';
 import { RealtimeVoice } from '../src/domains/voice/realtime';
 import type { VoiceEvent } from '../src/contracts';
 
-test('voice gates audio on session readiness, executes completed tools only, and isolates stopped sessions', () => {
+test('voice gates audio on session readiness, executes completed tools only, and isolates stopped sessions', async () => {
   process.env.QWEN_REALTIME_API_KEY = 'test-key';
   process.env.QWEN_REALTIME_URL = 'wss://test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
   class Socket extends EventEmitter {
@@ -22,9 +22,38 @@ test('voice gates audio on session readiness, executes completed tools only, and
   first.receive({ type: 'response.function_call_arguments.done', call_id: 'one', name: 'list_tasks', arguments: '{}' });
   assert.equal(calls.length, 0);
   first.receive({ type: 'response.done', response: { status: 'completed' } });
-  assert.deepEqual(calls, ['list_tasks']); assert.equal(first.sent.at(-1)?.type, 'response.create');
+  await Promise.resolve(); assert.deepEqual(calls, ['list_tasks']); assert.equal(first.sent.at(-1)?.type, 'response.create');
   first.receive({ type: 'response.function_call_arguments.done', call_id: 'two', name: 'save_request', arguments: '{}' });
   first.receive({ type: 'response.done', response: { status: 'cancelled' } }); assert.equal(calls.length, 1);
   first.receive({ type: 'input_audio_buffer.speech_started' }); assert.equal(events.at(-1)?.type, 'interrupt');
   voice.stop(); first.receive({ type: 'response.audio.delta', delta: 'AAAA' }); assert.equal(events.at(-1)?.type, 'state');
+});
+
+test('text and notifications wait for asynchronous tool outputs; old sessions cannot contaminate new ones', async () => {
+  process.env.QWEN_REALTIME_API_KEY = 'test-key';
+  process.env.QWEN_REALTIME_URL = 'wss://test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
+  class Socket extends EventEmitter {
+    readyState = 1; bufferedAmount = 0; sent: any[] = [];
+    send(data: string) { this.sent.push(JSON.parse(data)); }
+    terminate() { this.emit('close'); }
+    receive(data: unknown) { this.emit('message', Buffer.from(JSON.stringify(data))); }
+  }
+  const sockets: Socket[] = []; let resolve!: (result: unknown) => void;
+  const voice = new RealtimeVoice(() => {}, () => new Promise(r => { resolve = r; }), () => { const socket = new Socket(); sockets.push(socket); return socket as unknown as WebSocket; });
+  voice.start(false); const first = sockets[0]; first.receive({ type: 'session.updated' });
+  first.receive({ type: 'response.function_call_arguments.done', call_id: 'one', name: 'dispatch_task', arguments: '{}' });
+  first.receive({ type: 'response.done', response: { status: 'completed' } });
+  voice.text('progress?'); voice.notify('running');
+  assert.equal(first.sent.length, 0);
+  resolve({ ok: true }); await Promise.resolve(); await Promise.resolve();
+  assert.equal(first.sent[0].item.type, 'function_call_output');
+  assert.equal(first.sent.at(-1).type, 'response.create');
+  assert.equal(first.sent.filter(e => e.type === 'response.create').length, 1);
+  first.receive({ type: 'response.function_call_arguments.done', call_id: 'two', name: 'dispatch_task', arguments: '{}' });
+  first.receive({ type: 'response.done', response: { status: 'completed' } });
+  voice.stop(); voice.start(false); const second = sockets[1]; second.receive({ type: 'session.updated' });
+  resolve({ stale: true }); await Promise.resolve(); await Promise.resolve();
+  assert.equal(second.sent.length, 0); voice.text('new session');
+  assert.equal(second.sent.at(-1).type, 'response.create');
+  voice.stop();
 });

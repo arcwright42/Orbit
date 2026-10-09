@@ -10,7 +10,7 @@ export class Scheduler {
   private stopped = false;
   private errors: string[] = [];
 
-  constructor(readonly queue: ExecutionQueue, private agents: ReadonlyMap<string, ExecutionPort>, private concurrency = 2) {
+  constructor(readonly queue: ExecutionQueue, private agents: ReadonlyMap<string, ExecutionPort>, private concurrency = 2, private lane: (destination: string) => string = value => value) {
     if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('Invalid concurrency.');
   }
 
@@ -25,7 +25,7 @@ export class Scheduler {
   tick(): void {
     if (this.stopped) return;
     for (;;) {
-      const item = this.queue.claimNext([...this.agents.keys()], this.concurrency);
+      const item = this.queue.claimNext([...this.agents.keys()], this.concurrency, this.lane);
       if (!item) return;
       const controller = new AbortController();
       const port = this.agents.get(item.destination)!;
@@ -51,6 +51,7 @@ export class Scheduler {
   async cancel(id: string, actor: string): Promise<QueueItem> {
     const item = this.queue.requestCancel(id, actor);
     if (!item.cancelRequested || !['in-progress', 'blocked'].includes(item.state) || !item.generation) return item;
+    if (item.state === 'blocked' && item.blockedOn !== 'runtime:unknown' && !this.runs.has(id)) { this.queue.confirmCancel(id, item.generation); this.tick(); return this.queue.get(id); }
     const port = this.agents.get(item.destination);
     if (!port) return item;
     // Abort is a signal, never sufficient to label the task canceled.

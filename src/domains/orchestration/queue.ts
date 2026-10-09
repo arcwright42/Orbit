@@ -65,15 +65,15 @@ export class ExecutionQueue {
   }
 
   /** BEGIN IMMEDIATE + persisted running count + unique owner index coordinate schedulers. */
-  claimNext(destinations: string[], maxConcurrent: number): QueueItem | undefined {
+  claimNext(destinations: string[], maxConcurrent: number, lane: (destination: string) => string = value => value): QueueItem | undefined {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('Invalid concurrency.');
     if (!destinations.length) return undefined;
     return transaction(this.db, () => {
       const reservations = this.list().filter(item => item.state === 'in-progress' ||
         (item.state === 'blocked' && (item.blockedOn === 'runtime:unknown' || item.cancelRequested)));
       if (reservations.length >= maxConcurrent) return undefined;
-      const busy = new Set(reservations.map(item => item.destination));
-      const next = this.list().find(item => item.state === 'pending' && destinations.includes(item.destination) && !busy.has(item.destination));
+      const busy = new Set(reservations.map(item => lane(item.destination)));
+      const next = this.list().find(item => item.state === 'pending' && destinations.includes(item.destination) && !busy.has(lane(item.destination)));
       if (!next) return undefined;
       this.db.prepare("UPDATE execution_queue SET state = 'in-progress', generation = ?, blocked_on = NULL, updated_at = ? WHERE id = ?")
         .run(randomUUID(), new Date().toISOString(), next.id);
@@ -96,6 +96,8 @@ export class ExecutionQueue {
           this.db.prepare('UPDATE execution_queue SET successor_id = ? WHERE id = ?').run(successor.id, item.id);
           this.change(item, 'handed-off', item.destination, required(result.reason, 'handoff reason'));
         }
+      } else if (result.kind === 'question') {
+        this.change(item, 'blocked', item.destination, required(result.question, 'question'), 'human:user');
       } else if (result.kind === 'completed') {
         const evidence = required(result.evidenceRef, 'evidenceRef');
         this.db.prepare('UPDATE execution_queue SET evidence_ref = ? WHERE id = ?').run(evidence, id);
@@ -107,6 +109,31 @@ export class ExecutionQueue {
       }
       return this.get(id);
     });
+  }
+
+  activity(id: string, generation: string, note: string): void {
+    const item = this.get(id);
+    if (item.state === 'in-progress' && item.generation === generation) this.event(id, item.state, item.destination, required(note, 'activity', 2000));
+  }
+
+  answer(id: string, answer: string): QueueItem {
+    return transaction(this.db, () => {
+      const item = this.get(id);
+      if (item.state !== 'blocked' || item.blockedOn !== 'human:user' || item.cancelRequested) throw new Error('此任务没有等待用户回答。');
+      const reply = required(answer, 'answer', 16000);
+      this.db.prepare('UPDATE execution_queue SET body=?, generation=NULL WHERE id=?').run(`${item.body}\n\n用户回答：${reply}`, id);
+      this.change(item, 'pending', 'human:user', reply);
+      return this.get(id);
+    });
+  }
+
+  pickup(id: string, now = Date.now(), thresholdMs = 10 * 60_000): 'unclaimed' | 'working' | 'stalled-after-claim' | 'parked' | 'terminal' {
+    const item = this.get(id);
+    if (item.state === 'pending') return 'unclaimed';
+    if (item.state === 'blocked') return 'parked';
+    if (item.state !== 'in-progress') return 'terminal';
+    const last = this.db.prepare('SELECT at FROM execution_events WHERE item_id=? ORDER BY seq DESC LIMIT 1').get(id);
+    return now - Date.parse(String(last?.at ?? item.updatedAt)) > thresholdMs ? 'stalled-after-claim' : 'working';
   }
 
   requestCancel(id: string, actor: string): QueueItem {

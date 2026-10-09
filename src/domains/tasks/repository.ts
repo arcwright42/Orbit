@@ -19,6 +19,14 @@ export class TaskRepository {
     this.db.prepare('INSERT INTO tasks VALUES (?, ?, ?)').run(task.id, task.requestId, JSON.stringify(task));
   }
 
+  get(id: string): Task {
+    const row = this.db.prepare('SELECT payload FROM tasks WHERE id=?').get(id);
+    if (!row) throw new Error('任务不存在。'); return JSON.parse(String(row.payload)) as Task;
+  }
+  update(id: string, fields: Partial<Pick<Task, 'status' | 'teamId' | 'executionSummary' | 'brief'>>): Task {
+    const task = { ...this.get(id), ...fields, updatedAt: new Date().toISOString() };
+    this.db.prepare('UPDATE tasks SET payload=? WHERE id=?').run(JSON.stringify(task), id); return task;
+  }
   cancel(id: string): void {
     const row = this.db.prepare('SELECT payload FROM tasks WHERE id = ?').get(id);
     if (!row) throw new Error('任务不存在。');

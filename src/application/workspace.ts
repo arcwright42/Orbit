@@ -12,18 +12,24 @@ export class WorkspaceService {
   private tasks: TaskRepository;
   constructor(private db: DatabaseSync, readonly materials: MaterialLibrary) {
     this.tasks = new TaskRepository(db);
+    db.exec('CREATE TABLE IF NOT EXISTS interactions (id TEXT PRIMARY KEY,payload TEXT NOT NULL)');
   }
 
   snapshot(): Workspace {
     const setting = this.db.prepare('SELECT value FROM settings WHERE key = ?').get('openrigUrl');
     return {
       tasks: this.tasks.list(), attachments: this.materials.list(),
-      messages: this.db.prepare('SELECT payload FROM messages ORDER BY rowid').all()
-        .map(row => JSON.parse(String(row.payload)) as Message),
+      messages: [...this.db.prepare('SELECT payload FROM messages ORDER BY rowid').all(), ...this.db.prepare('SELECT payload FROM interactions ORDER BY rowid').all()]
+        .map(row => JSON.parse(String(row.payload)) as Message).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       settings: { openrigUrl: setting ? String(setting.value) : 'http://127.0.0.1:7433' },
     };
   }
 
+  recordInteraction(role: 'user' | 'assistant', text: string) {
+    if (!text.trim()) return;
+    const message: Message = { id: randomUUID(), role, text: text.slice(0, 64000), createdAt: new Date().toISOString() };
+    this.db.prepare('INSERT INTO interactions VALUES (?,?)').run(message.id, JSON.stringify(message));
+  }
   submit(value: unknown): Workspace {
     const input = validateRequest(value);
     transaction(this.db, () => {
