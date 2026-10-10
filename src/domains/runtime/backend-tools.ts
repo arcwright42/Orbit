@@ -3,16 +3,17 @@ import { randomBytes } from 'node:crypto';
 
 export interface BackendTool { name: string; description: string; input: Record<string, string> }
 export const backendTools: BackendTool[] = [
+  { name:'read_context',description:'启动、交接或原生压缩后重新读取当前上下文 profile、席位记录与团队经验',input:{} },
   { name: 'list_work', description: '查询当前任务的执行义务与真实状态，不跨任务', input: { after: '可选队列偏移', limit: '1–100，默认20' } },
   { name: 'get_work', description: '读取同一任务的一个义务及其上下文', input: { itemId: '义务 ID，默认当前义务' } },
   { name: 'get_team', description: '查询本团队角色及允许交接的成员', input: {} },
   { name: 'search_team_memory', description: '检索本团队经验及来源', input: { query: '检索词' } },
   { name: 'read_team_memory', description: '读取本团队一条经验原文', input: { memoryId: '经验 ID' } },
   { name: 'report_progress', description: '记录可核查的当前进度，不代表完成', input: { note: '进展及证据' } },
-  { name: 'handoff_work', description: '准备交接当前义务；结束本轮后才生效', input: { destination: '允许目标的 sessionId', summary: '交接依据、进度及接手要求' } },
+  { name: 'handoff_work', description: '准备交接当前义务；结束本轮后才生效', input: { acceptance: '验收契约要求时填写 candidate/verdict/evidence_ref', destination: '允许目标的 sessionId', summary: '交接依据、进度及接手要求' } },
   { name: 'wait_work', description: '准备等待外部条件或同任务义务；退出后停放', input: { blockedOn: 'external:原因 或 queue:义务ID', summary: '等待原因', wakeAfterSeconds: '可选再次检查秒数', wakeMaxSeconds: '可选退避上限秒数' } },
   { name: 'request_help', description: '准备向用户提问，不能代替用户批准', input: { question: '需要用户回答的问题' } },
-  { name: 'complete_work', description: '提交成果意图；进程正常结束后核验文件和审核结论，再提交状态', input: { summary: '成果摘要', artifacts: '工作目录相对文件路径数组', verdict: '审核必须 pass / changes_requested', recap: '交接决定与理由', lessons: '可复用经验，没有则空', recoveryAction: '仅异常诊断：retry / rotate / ask_user / abort'  } },
+  { name: 'complete_work', description: '提交成果意图；进程正常结束后核验文件和审核结论，再提交状态', input: { acceptance: '有契约时填写 candidate/verdict/evidence_ref 对象', summary: '成果摘要', artifacts: '工作目录相对文件路径数组', verdict: '审核必须 pass / changes_requested', recap: '交接决定与理由', lessons: '可复用经验，没有则空', recoveryAction: '仅异常诊断：retry / rotate / ask_user / abort'  } },
 ];
 export interface BackendReply { value: unknown; closure?: Record<string, unknown> }
 /** Short-lived loopback capability, bound by the application to one claimed generation.
@@ -24,8 +25,9 @@ export class BackendAttempt {
   private endpoint = '';
   private revoked = false;
   private closure?: Record<string, unknown>;
+  private requests: Promise<unknown> = Promise.resolve();
   private receipts = new Map<string, { payload: string; reply: unknown }>();
-  constructor(private invoke: (name: string, input: Record<string, unknown>) => BackendReply) {}
+  constructor(private invoke: (name: string, input: Record<string, unknown>) => BackendReply | Promise<BackendReply>) {}
   get staged() { return this.closure; }
   async open() {
     if (this.server) return;
@@ -36,16 +38,18 @@ export class BackendAttempt {
         let body = ''; for await (const chunk of req) { body += chunk.toString(); if (Buffer.byteLength(body) > 65536) throw new Error('Tool input too large'); }
         const { name, input = {}, requestId } = JSON.parse(body);
         if (typeof name !== 'string' || typeof requestId !== 'string' || !requestId || requestId.length > 200 || !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid tool request');
+        const request=this.requests.then(async () => {
         const payload = JSON.stringify({ name, input }), previous = this.receipts.get(requestId);
-        if (previous) { if (previous.payload !== payload) throw new Error('Request ID reused with different input'); send(200, previous.reply); return; }
+        if (previous) { if (previous.payload !== payload) throw new Error('Request ID reused with different input'); return previous.reply; }
         if (this.revoked) throw new Error('Execution ended');
         if (this.receipts.size >= 1000) throw new Error('Tool request limit reached');
-        const result = name === 'list_tools' ? { value: backendTools } : this.invoke(name, input);
+        const result = name === 'list_tools' ? { value: backendTools } : await this.invoke(name, input);
         if (result.closure) {
           if (this.closure && JSON.stringify(this.closure) !== JSON.stringify(result.closure)) throw new Error('结束意图已提交，不可提交冲突的结束意图');
           this.closure = result.closure;
         }
-        this.receipts.set(requestId, { payload, reply: result.value }); send(200, result.value);
+        this.receipts.set(requestId, { payload, reply: result.value }); return result.value;
+        }); this.requests=request.catch(() => {}); send(200,await request);
       } catch (error) { send(400, { error: error instanceof Error ? error.message : 'Tool failed' }); }
     });
     this.server.requestTimeout = 10000; this.server.headersTimeout = 10000;

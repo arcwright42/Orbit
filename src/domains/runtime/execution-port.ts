@@ -5,6 +5,8 @@ import type { ExecutionResult, QueueItem } from '../orchestration/types';
  * item.generation fences late results; item.id is the durable execution identity.
  */
 export interface ExecutionPort {
+  checkReady?(signal?: AbortSignal): Promise<import('./readiness').Readiness>;
+  prepareSuccessor?(signal: AbortSignal, context: string): Promise<{ nativeId: string }>;
   execute(item: QueueItem, signal: AbortSignal): Promise<ExecutionResult>;
   /** True only after the runtime confirms execution stopped. May resolve false. */
   /** Only returns a result with durable exit evidence, never based on inactivity. */

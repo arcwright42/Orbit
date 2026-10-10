@@ -94,7 +94,7 @@ test('configuration rejects unknown fields, dependency cycles and undeclared rou
 test('missing review verdict fails rather than accepting or automatically looping', async () => {
   let count = 0;
   const env = await setup(seat => ({ execute: item => { count++; return completed(seat, item, { verdict: '' }); }, async cancel() { return true; } }));
-  try { const task = env.task(); await env.service.dispatch(task.id, env.team.id); await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'failed'; }); assert.equal(count, 2); assert.throws(() => env.service.accept(task.id)); }
+  try { const task = env.task(); await env.service.dispatch(task.id, env.team.id); await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'blocked'; }); assert.equal(count, 2); assert.throws(() => env.service.accept(task.id)); }
   finally { await env.close(); }
 });
 
@@ -102,7 +102,7 @@ test('handoff cycles are bounded before the scheduler launches an unbounded chai
   const config: TeamConfig = { members: ['left','right'].map(role => ({ role, name: role, instructions: role })), edges: [{ from: 'left', to: 'right' }, { from: 'right', to: 'left' }], workflow: { entry: 'produce', max_hops: 3, steps: [{ id: 'produce', actor_role: 'left', objective: 'produce' }] } };
   let env: Awaited<ReturnType<typeof setup>>; let count = 0;
   env = await setup(seat => ({ async execute(item) { count++; return { kind: 'handoff', destination: env.service.teams.taskSeats(seat.teamId, item.taskId).find(s => s.role !== seat.role)!.sessionId, body: '接力', reason: '接力' }; }, async cancel() { return true; } }), config);
-  try { const task = env.task(); await env.service.dispatch(task.id, env.team.id); await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'failed'; }); assert.ok(count <= 4); }
+  try { const task = env.task(); await env.service.dispatch(task.id, env.team.id); await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'blocked'; }); assert.ok(count <= 4); }
   finally { await env.close(); }
 });
 
@@ -134,7 +134,7 @@ test('Codex adapter keeps full event evidence and recovers a settled generation 
   const env = await setup(() => ({ async execute() { return { kind: 'failed', reason: 'unused' }; }, async cancel() { return true; } }));
   try {
     const binary = join(env.root, 'codex-fixture');
-    await writeFile(binary, `#!/usr/bin/env node\nconst fs = require('node:fs'); process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringify({type:'thread.started',thread_id:'native-test-123456'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'first message'}})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'second message'}})); fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1], JSON.stringify({outcome:'completed',summary:'verified',question:'',artifacts:[],verdict:'pass',recap:'decision',lessons:'lesson'})); });`); await chmod(binary, 0o700);
+    await writeFile(binary, `#!/usr/bin/env node\nconst fs = require('node:fs'); if(process.argv.includes('--version') || process.argv.includes('status')) process.exit(0); process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringify({type:'thread.started',thread_id:'native-test-123456'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'first message'}})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'second message'}})); fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1], JSON.stringify({outcome:'completed',summary:'verified',question:'',artifacts:[],verdict:'pass',recap:'decision',lessons:'lesson'})); });`); await chmod(binary, 0o700);
     const task = env.task(), seat = env.service.teams.taskSeats(env.team.id, task.id)[0];
     env.service.queue.setClaimGuard(() => true);
     env.service.queue.enqueue({ requestId: 'adapter-recovery', taskId: task.id, source: 'user', destination: seat.sessionId, body: 'verify' });
@@ -177,7 +177,7 @@ test('three handoffs allow A -> B -> C -> D independently of projection polling'
 test('author cannot delegate actual work to the reserved reviewer session', async () => {
   let env:Awaited<ReturnType<typeof setup>>; const calls:string[]=[];
   env=await setup(seat=>({async execute(item){calls.push(seat.role);if(seat.role==='builder')return {kind:'handoff',destination:env.service.teams.taskSeats(seat.teamId,item.taskId).find(s=>s.role==='reviewer')!.sessionId,body:'do author work',reason:'delegate'};return completed(seat,item);},async cancel(){return true;}}));
-  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='failed';});assert.deepEqual(calls,['builder']);assert.equal(env.service.queue.list().length,1);}finally{await env.close();}
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='blocked';});assert.deepEqual(calls,['builder']);assert.equal(env.service.queue.list().length,2);}finally{await env.close();}
 });
 
 test('successor insertion failure rolls back queue completion, frontier and workflow trail together', async () => {
@@ -185,8 +185,8 @@ test('successor insertion failure rolls back queue completion, frontier and work
   try {
     const core=(env.service as unknown as {db:import('node:sqlite').DatabaseSync}).db;
     core.exec(`CREATE TRIGGER reject_reviewer BEFORE INSERT ON execution_queue WHEN NEW.request_id LIKE '%:reviewer:%' BEGIN SELECT RAISE(ABORT,'injected successor failure'); END`);
-    const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='failed';});
-    const rows=env.service.queue.list();assert.equal(rows.length,1);assert.equal(rows[0].state,'failed');
+    const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='blocked';});
+    const rows=env.service.queue.list();assert.equal(rows.length,2);assert.equal(rows[0].state,'failed');
     const trails=core.prepare('SELECT exit FROM workflow_transitions WHERE task_id=?').all(task.id);assert.deepEqual(trails.map(r=>r.exit),['failed']);
     const flow=JSON.parse(String(core.prepare('SELECT payload FROM task_flows WHERE task_id=?').get(task.id)!.payload));assert.equal(flow.runs.reviewer.state,'dormant');assert.equal(flow.hops,0);
   }finally{await env.close();}
@@ -206,8 +206,9 @@ test('exception coordinator retries stopped work without completing the original
     const task = env.task(); await env.service.dispatch(task.id,env.team.id);
     await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks[0].status === 'review'; });
     assert.deepEqual(calls,['builder','coordinator','builder','reviewer']);
-    assert.equal(env.service.queue.list().length,3);
-    assert.ok(env.service.queue.list().every(i => i.state === 'done'));
+    assert.equal(env.service.queue.list().length,4);
+    assert.equal(env.service.queue.list().filter(i => i.state === 'done').length,3);
+    assert.equal(env.service.queue.list().filter(i => i.state === 'failed').length,1);
   } finally { await env.close(); }
 });
 
@@ -268,4 +269,87 @@ test('stalled work is diagnosed once and cannot be duplicated while its process 
     assert.equal(builds,1); assert.equal(diagnoses,1); assert.equal(env.service.queue.get(source.id).state,'in-progress');
     await env.service.cancel(task.id);
   } finally { await env.close(); }
+});
+
+for (const exit of ['handoff','waiting'] as const) test(`mapped ${exit} closes one packet and creates the declared step, not an extra delegation`, async () => {
+  const config:TeamConfig={members:['a','b'].map(role=>({role,name:role,instructions:role})),edges:[{from:'a',to:'b'}],workflow:{entry:'a',max_hops:3,steps:[{id:'a',actor_role:'a',objective:'first',next_hop:{on:{[exit]:'b'}}},{id:'b',actor_role:'b',objective:'next'}]}};
+  let env:Awaited<ReturnType<typeof setup>>; const calls:string[]=[];
+  env=await setup(seat=>({async execute(item){calls.push(seat.role); if(seat.role==='a') return exit==='waiting' ? {kind:'blocked',blockedOn:'external:check',reason:'route to checker'} : {kind:'handoff',destination:env.service.teams.taskSeats(seat.teamId,item.taskId).find(s=>s.role==='b')!.sessionId,body:'handoff',reason:'route'};return completed(seat,item);},async cancel(){return true;}}),config);
+  try { const task=env.task();await env.service.dispatch(task.id,env.team.id); await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.deepEqual(calls,['a','b']);assert.equal(env.service.queue.list().length,2);assert.ok(env.service.queue.list().every(i=>i.state==='done')); } finally {await env.close();}
+});
+
+test('role gate runs at its target and requires exact candidate/verdict/evidence acceptance', async () => {
+  const config:TeamConfig={members:['author','checker'].map(role=>({role,name:role,instructions:role})),edges:[],workflow:{entry:'gate',max_hops:3,steps:[{id:'gate',actor_role:'author',objective:'approval',gate:{target:'checker',summary:'check candidate'},acceptance:{candidate:'candidate-1',verdicts:['accept'],evidence_ref:'receipt-1'}}]}};
+  let valid=false;const roles:string[]=[];
+  const env=await setup(seat=>({async execute(item){roles.push(seat.role);return completed(seat,item,{acceptance:{candidate:valid?'candidate-1':'wrong',verdict:'accept',evidence_ref:'receipt-1'}});},async cancel(){return true;}}),config);
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception';});assert.throws(()=>env.service.accept(task.id));valid=true;env.service.retry(task.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.deepEqual(roles,['checker','checker']);}finally{await env.close();}
+});
+
+test('human exception has an answerable packet and redrive preserves completed parallel branches', async () => {
+  const config:TeamConfig={members:['a','b'].map(role=>({role,name:role,instructions:role})),edges:[],workflow:{entry:'a',max_hops:2,steps:[{id:'a',actor_role:'a',objective:'a',depends_on:[]},{id:'b',actor_role:'b',objective:'b',depends_on:[]}]}};
+  let attempts=0;const calls:string[]=[];
+  const env=await setup(seat=>({async execute(item){calls.push(seat.role);if(seat.role==='a' && attempts++===0)return {kind:'failed',reason:'repair configuration'};return completed(seat,item);},async cancel(){return true;}}),config);
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception' && env.service.queue.list().some(i=>i.state==='done');});
+    const old=env.service.queue.list().find(i=>i.state==='failed')!; env.service.answer(task.id,'已修复配置'); assert.equal(env.service.queue.get(old.id).state,'failed'); env.service.retry(task.id);
+    await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.equal(calls.filter(r=>r==='b').length,1);assert.equal(calls.filter(r=>r==='a').length,2);assert.ok(env.service.queue.get(old.id).successorId);
+    const core=(env.service as unknown as {db:import('node:sqlite').DatabaseSync}).db;assert.equal(core.prepare('SELECT count(*) AS n FROM workflow_failures WHERE successor_id IS NOT NULL').get()!.n,1);
+  }finally{await env.close();}
+});
+
+test('successor preparation failure preserves native binding, successful readiness commits then redrives', async () => {
+  let failPreparation=true, attempts=0;
+  const env=await setup(seat=>({async prepareSuccessor(){if(failPreparation)throw Error('readiness refused');return {nativeId:'new-native-ready-123'};},async execute(item){if(seat.role==='builder' && attempts++===0)return {kind:'failed',reason:'context exhausted'};return completed(seat,item);},async cancel(){return true;}}));
+  try{const task=env.task(),seat=env.service.teams.taskSeats(env.team.id,task.id)[0];env.service.teams.bindNative(seat.sessionId,seat.generation,'old-native-ready-123');await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception';});
+    await assert.rejects(env.service.rotateSession(task.id),/readiness refused/);assert.equal(env.service.teams.seat(seat.sessionId).nativeId,'old-native-ready-123');assert.equal(env.service.teams.seat(seat.sessionId).generation,seat.generation);
+    failPreparation=false;await env.service.rotateSession(task.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.equal(env.service.teams.seat(seat.sessionId).nativeId,'new-native-ready-123');assert.notEqual(env.service.teams.seat(seat.sessionId).generation,seat.generation);
+  }finally{await env.close();}
+});
+
+test('next-hop require and forbid are enforced, and waiting defaults come from the workflow', () => {
+  const config=structuredClone(defaultTeamConfig);config.workflow.steps[0].next_hop={mode:'forbid',on:{done:'reviewer'}};assert.doesNotThrow(()=>validateTeamConfig(config));
+  config.workflow.steps[0].next_hop={mode:'require',on:{done:'reviewer'}};config.workflow.steps[0].re_present_after_seconds=5;config.workflow.steps[0].re_present_max_seconds=10;assert.doesNotThrow(()=>validateTeamConfig(config));
+});
+
+test('restart preserves human escalation and resumes only the failed branch after explicit retry',async()=>{
+  let fail=true;
+  const env=await setup(seat=>({async execute(item){if(seat.role==='builder' && fail)return {kind:'failed',reason:'needs input'};return completed(seat,item);},async cancel(){return true;}}));
+  let reopened:TaskExecutionService|undefined;
+  try{
+    const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception';});await env.service.close();
+    fail=false;reopened=new TaskExecutionService(env.db,env.materials,env.root,()=>{},undefined,seat=>({execute:item=>completed(seat,item),async cancel(){return true;}}));
+    reopened.retry(task.id);await reopened.sync();assert.equal(reopened.detail(task.id)?.blockedOn,'human:exception');reopened.answer(task.id,'已修复');reopened.retry(task.id);
+    await until(async()=>{await reopened!.sync();return env.workspace.snapshot().tasks[0].status==='review';});
+  }finally{await reopened?.close();await env.close();}
+});
+
+test('user redrive receives a new bounded hop window and preserves original failed packet',async()=>{
+  const config:TeamConfig={members:[{role:'worker',name:'worker',instructions:'work'}],edges:[],workflow:{entry:'a',max_hops:1,steps:[{id:'a',actor_role:'worker',objective:'a',next_hop:{on:{done:'b'}}},{id:'b',actor_role:'worker',objective:'b',next_hop:{on:{done:'c'}}},{id:'c',actor_role:'worker',objective:'c'}]}};
+  const calls:string[]=[];const env=await setup(seat=>({async execute(item){calls.push([...item.body.matchAll(/步骤 (\w+)：/g)].at(-1)![1]);return completed(seat,item);},async cancel(){return true;}}),config);
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception';});const failed=env.service.queue.list().find(i=>i.state==='failed')!;env.service.retry(task.id);await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.deepEqual(calls,['a','b','b','c']);assert.equal(env.service.queue.get(failed.id).state,'failed');assert.ok(env.service.queue.get(failed.id).successorId);}finally{await env.close();}
+});
+
+test('quitting during successor preparation aborts it without replacing the prior native binding',async()=>{
+  let entered!:()=>void;const started=new Promise<void>(r=>{entered=r;});
+  const env=await setup(()=>({async execute(){return {kind:'failed',reason:'rotate'};},async prepareSuccessor(signal){entered();await new Promise<void>((resolve,reject)=>{if(signal.aborted)reject(Error('aborted'));else signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true});void resolve;});return {nativeId:'should-not-bind'};},async cancel(){return true;}}));
+  try{const task=env.task(),seat=env.service.teams.taskSeats(env.team.id,task.id)[0];env.service.teams.bindNative(seat.sessionId,seat.generation,'prior-native-123');await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:exception';});const rotation=env.service.rotateSession(task.id);const rejection=assert.rejects(rotation,/aborted/);await started;await env.service.close();await rejection;
+    const {openCoreDatabase}=await import('../src/infrastructure/core-database');const core=openCoreDatabase(join(env.root,'execution-core.sqlite'));try{assert.equal(core.prepare('SELECT native_id FROM orbit_task_sessions WHERE session_id=?').get(seat.sessionId)!.native_id,'prior-native-123');}finally{core.close();}
+  }finally{await env.close();}
+});
+
+test('foreground exposes context catalog and configures profiles only before task execution',async()=>{
+  const {stringify}=await import('yaml');const {platformTools}=await import('../src/application/platform-tools');
+  const env=await setup(seat=>({execute:item=>completed(seat,item),async cancel(){return true;}}));
+  try{
+    const pack=join(env.root,'pack');await mkdir(pack);await writeFile(join(pack,'guide.md'),'## Guide\nContext');await writeFile(join(pack,'manifest.yaml'),stringify({name:'pack',version:'1',taxonomy:'world',files:[{path:'guide.md',role:'guide'}],atoms:[{id:'guide',address:'guide.md',taxonomy:'world',situations:['fresh'],purpose:'width',runtime:'codex',order:0,priority:'core'}],profiles:[{id:'startup',situations:['fresh'],runtimes:['codex'],phases:[{id:'read',atoms:['guide']}]}]}));
+    env.service.setContextPack(env.team.id,pack);const tools=platformTools(env.workspace,env.service,()=>{});
+    const catalog=await tools('get_team',{teamId:env.team.id},'catalog') as ReturnType<TaskExecutionService['teamContext']>;assert.equal(catalog.contextCatalog.profiles[0].id,'startup');
+    await tools('configure_team_context',{teamId:env.team.id,role:'builder',profiles:{fresh:'startup'}},'set');assert.equal(env.service.teams.config(env.team.id).members[0].context_profiles?.fresh,'startup');
+    const task=env.task();await env.service.dispatch(task.id,env.team.id);await assert.rejects(async()=>await tools('configure_team_context',{teamId:env.team.id,role:'builder',profiles:{fresh:'startup'}},'late'));
+  }finally{await env.close();}
+});
+
+test('coordinator questions route answers to the diagnostic, then resume the original failure',async()=>{
+  const config=structuredClone(defaultTeamConfig);config.members.push({role:'coordinator',name:'coordinator',instructions:'diagnose'});config.workflow.exception_routing={orchestrator_role:'coordinator'};
+  let failures=0,questions=0;const env=await setup(seat=>({async execute(item){if(seat.role==='builder' && failures++===0)return {kind:'failed',reason:'failure'};if(seat.role==='coordinator'){if(questions++===0)return {kind:'question',question:'配置已修复吗？'};assert.match(item.body,/已修复/);return completed(seat,item,{recoveryAction:'retry'});}return completed(seat,item);},async cancel(){return true;}}),config);
+  try{const task=env.task();await env.service.dispatch(task.id,env.team.id);await until(async()=>{await env.service.sync();return env.service.detail(task.id)?.blockedOn==='human:user';});env.service.answer(task.id,'已修复');await until(async()=>{await env.service.sync();return env.workspace.snapshot().tasks[0].status==='review';});assert.equal(questions,2);}finally{await env.close();}
 });

@@ -25,7 +25,7 @@ test('real application dispatch is deduplicated, task sessions isolated, builder
   try {
     const first = env.task('first-test-request');
     const attempts = await Promise.allSettled([env.service.dispatch(first.id, env.team.id), env.service.dispatch(first.id, env.team.id)]);
-    assert.equal(registrations, 2);
+    assert.equal(registrations, 3);
     assert.equal(attempts.filter(r => r.status === 'fulfilled').length, 1);
     await until(async () => { await env.service.sync(); return env.workspace.snapshot().tasks.find(t => t.id === first.id)?.status === 'review'; });
     assert.deepEqual(executions.map(s => s.role), ['builder', 'reviewer']);
@@ -66,7 +66,7 @@ test('invalid evidence is visible and does not block projection of other tasks',
   try {
     const bad = env.task('invalid-test-request'), good = env.task('valid-test-request');
     await env.service.dispatch(bad.id, env.team.id); await env.service.dispatch(good.id, env.team.id);
-    await until(async () => { await env.service.sync(); const tasks = env.workspace.snapshot().tasks; return tasks.find(t => t.id === bad.id)?.status === 'failed' && tasks.find(t => t.id === good.id)?.status === 'review'; });
+    await until(async () => { await env.service.sync(); const tasks = env.workspace.snapshot().tasks; return tasks.find(t => t.id === bad.id)?.status === 'blocked' && tasks.find(t => t.id === good.id)?.status === 'review'; });
     assert.match(env.workspace.snapshot().tasks.find(t => t.id === bad.id)!.executionSummary!, /核验失败/);
   } finally { await env.close(); }
 });
@@ -76,7 +76,7 @@ test('native Codex adapter preparation failure is recoverable and never reported
   const env = await setup(() => ({ async execute() { return { kind: 'failed', reason: 'unused' }; }, async cancel() { return false; } }));
   try {
     const task = env.task('prepare-test-request'); const seat = env.service.teams.taskSeats(env.team.id, task.id)[0];
-    const adapter = new CodexRuntime(env.service.teams, seat.sessionId, join(env.root, 'evidence'), () => {}, async () => { throw Error('invalid context'); });
+    const adapter = new CodexRuntime(env.service.teams, seat.sessionId, join(env.root, 'evidence'), () => {}, async () => { throw Error('invalid context'); }, '/usr/bin/true');
     const item = env.service.queue.enqueue({ requestId: 'prepare-failure', taskId: task.id, source: 'foreground', destination: seat.sessionId, body: 'test' });
     const result = await adapter.execute({ ...item, generation: 'test' }, new AbortController().signal);
     assert.deepEqual(result, { kind: 'blocked', blockedOn: 'context:preparation', reason: 'invalid context' });

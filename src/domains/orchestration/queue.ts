@@ -22,6 +22,8 @@ function decode(row: Record<string, unknown>): QueueItem {
 export class ExecutionQueue {
   private claimable: (item: QueueItem) => boolean = () => true;
   setClaimGuard(guard: (item: QueueItem) => boolean) { this.claimable = guard; }
+  private routes: (item: QueueItem, result: ExecutionResult) => boolean = () => false;
+  setRoutingPolicy(policy: (item: QueueItem, result: ExecutionResult) => boolean) { this.routes = policy; }
   private projector?: (item: QueueItem, result: ExecutionResult) => void;
   setProjector(projector: (item: QueueItem, result: ExecutionResult) => void) { this.projector = projector; }
   constructor(private db: DatabaseSync) {
@@ -44,6 +46,8 @@ export class ExecutionQueue {
     return this.db.prepare('SELECT * FROM execution_events WHERE seq > ? ORDER BY seq LIMIT ?').all(after, limit)
       .map(row => ({ seq: Number(row.seq), itemId: String(row.item_id), state: row.state as QueueState, actor: String(row.actor), note: String(row.note), at: String(row.at) }));
   }
+
+  recentEvents(id: string) { this.get(id); return this.db.prepare('SELECT seq,state,actor,note,at FROM execution_events WHERE item_id=? ORDER BY seq DESC LIMIT 30').all(id).reverse(); }
 
   enqueue(input: EnqueueInput): QueueItem {
     return transaction(this.db, () => this.insert(input));
@@ -97,7 +101,9 @@ export class ExecutionQueue {
   private finishResult(id: string, generation: string, result: ExecutionResult): QueueItem {
       const item = this.get(id);
       if (item.generation !== generation || item.state !== 'in-progress') return item;
-      if (result.kind === 'handoff') {
+      if (!item.cancelRequested && this.routes(item, result)) {
+        this.change(item, 'done', item.destination, result.kind === 'handoff' ? result.reason : result.kind === 'blocked' ? result.reason : 'Workflow routed');
+      } else if (result.kind === 'handoff') {
         if (item.cancelRequested) {
           this.change(item, 'blocked', item.destination, 'Cancellation pending; handoff suppressed.', 'cancellation-unconfirmed');
         } else {
@@ -232,6 +238,17 @@ export class ExecutionQueue {
       return count;
     });
   }
+
+  supersede(id: string, successorId: string, actor: string, reason: string) {
+    const item = this.get(id); if (item.state === 'in-progress' || item.blockedOn === 'runtime:unknown' || item.cancelRequested) throw new Error('Work has not stopped');
+    this.db.prepare('UPDATE execution_queue SET successor_id=? WHERE id=?').run(successorId,id);
+    this.change(item, item.state === 'failed' ? 'failed' : 'done', actor, reason);
+  }
+  resolveHuman(id: string, answer: string) {
+    const item = this.get(id); if (item.state !== 'blocked' || !item.blockedOn?.startsWith('human:')) throw new Error('No human decision pending');
+    this.change(item, 'done', 'human:user', required(answer,'answer'));
+  }
+  note(id: string, actor: string, note: string) { const item = this.get(id); this.event(id,item.state,actor,required(note,'note')); }
 
   parkPending(id: string, blockedOn: string, reason: string) {
     return transaction(this.db, () => { const item = this.get(id); if (item.state !== 'pending') throw new Error('Only pending work can be parked'); this.change(item, 'blocked', 'application', reason, blockedOn); return this.get(id); });

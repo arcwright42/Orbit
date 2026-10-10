@@ -20,7 +20,8 @@ export function platformTools(workspace: WorkspaceService, execution: TaskExecut
       case 'get_team_template': return execution.templates.get(string(input.templateId));
       case 'save_team_template': return execution.templates.save({ id: string(input.templateId), name: string(input.name), description: string(input.description), config: input.config, expectedRevision: input.expectedRevision as number });
       case 'list_teams': return execution.teams.list().map(t => ({ id: t.id, name: t.name, roles: t.seats.map(s => ({ role: s.role, name: s.name })), runtime: 'codex' }));
-      case 'get_team': return execution.teams.require(string(input.teamId));
+      case 'get_team': return execution.teamContext(string(input.teamId));
+      case 'configure_team_context': return execution.configureContext(string(input.teamId),string(input.role),input.profiles as import('../domains/teams/registry').Seat['context_profiles'],input.contextAtoms as import('../domains/teams/registry').Seat['context_atoms']);
       case 'create_team': return execution.createTeam(string(input.name), input.config, input.templateId === undefined ? undefined : string(input.templateId), callId);
       case 'dispatch_task': await execution.dispatch(string(input.taskId), string(input.teamId), input.directory === undefined ? undefined : string(input.directory)); break;
       case 'get_task_execution': break;
@@ -28,7 +29,7 @@ export function platformTools(workspace: WorkspaceService, execution: TaskExecut
       case 'retry_task': execution.retry(string(input.taskId), itemId); break;
       case 'revise_task': await execution.revise(string(input.taskId), string(input.feedback)); break;
       case 'approve_task_step': execution.approve(string(input.taskId), string(input.answer), itemId); break;
-      case 'rotate_task_session': execution.rotateSession(string(input.taskId), itemId); break;
+      case 'rotate_task_session': await execution.rotateSession(string(input.taskId), itemId); break;
       case 'accept_task': execution.accept(string(input.taskId)); return workspace.snapshot().tasks.find(t => t.id === input.taskId);
       case 'cancel_task': await execution.cancel(string(input.taskId)); return workspace.snapshot().tasks.find(t => t.id === input.taskId);
       case 'search_team_memory': { const team = execution.teams.require(string(input.teamId)); return execution.memory.search([{ kind: 'team', id: team.id }], string(input.query)); }

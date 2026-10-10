@@ -1,3 +1,4 @@
+import { validateMarkdownAddressability, recapAdvisories } from '../context/files';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -17,9 +18,11 @@ export class TeamKnowledge {
     const key = `${item.id}-${item.generation}`;
     const version = join(root, 'recap-superseded', `${key}.md`);
     const content = `# 交接记录\n\n来源：${item.evidenceRef}\n任务：${item.taskId}\n\n${evidence.recap || evidence.summary}\n`;
+    validateMarkdownAddressability(content);
     if (!existsSync(version)) writeFileSync(version, content, { flag: 'wx' });
     this.db.prepare('INSERT OR IGNORE INTO seat_recaps (record_key,seat_id,content) VALUES (?,?,?)').run(key, seat.id, readFileSync(version, 'utf8'));
     const latest = this.db.prepare('SELECT content FROM seat_recaps WHERE seat_id=? ORDER BY seq DESC LIMIT 1').get(seat.id)!;
+    this.atomic(join(root, 'RECAP.advisories.json'), JSON.stringify(recapAdvisories(content)));
     this.atomic(join(root, 'RECAP.md'), String(latest.content));
     if (evidence.lessons?.trim()) {
       const scope = { kind: 'team' as const, id: seat.teamId };
