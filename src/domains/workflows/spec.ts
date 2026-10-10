@@ -1,5 +1,6 @@
 import { validateWatchdogs, type WatchdogSpec } from '../orchestration/watchdog';
 import type { ExceptionRouting } from './exceptions';
+import { validateStartupBlock, validateStartupLayers, type StartupBlock, type StartupLayers } from '../runtime/startup';
 /** Behavioral subset of OpenRig 4b48ca21 workflow-types/projector.
  * Keep authored roles, exits, dependencies and bounded transitions explicit.
  * Unsupported fields fail validation rather than silently promising compatibility.
@@ -16,8 +17,8 @@ export interface WorkflowStep {
   review?: boolean;
 }
 export interface WorkflowSpec { entry: string; steps: WorkflowStep[]; max_hops: number; exception_routing?: ExceptionRouting; watchdogs?: WatchdogSpec[] }
-export interface MemberSpec { role: string; name: string; instructions: string; model?: string; context_atoms?: Partial<Record<'project' | 'mission' | 'seat' | 'slice', string[]>>; context_profiles?: Partial<Record<'fresh' | 'handover' | 'post-compaction', string>> }
-export interface TeamConfig { members: MemberSpec[]; edges: { from: string; to: string }[]; workflow: WorkflowSpec }
+export interface MemberSpec { role: string; name: string; instructions: string; model?: string; startup?: StartupBlock; context_atoms?: Partial<Record<'project' | 'mission' | 'seat' | 'slice', string[]>>; context_profiles?: Partial<Record<'fresh' | 'handover' | 'post-compaction', string>> }
+export interface TeamConfig { members: MemberSpec[]; edges: { from: string; to: string }[]; workflow: WorkflowSpec; startup?: StartupLayers }
 export const defaultTeamConfig: TeamConfig = {
   members: [
     { role: 'builder', name: '执行者', instructions: '在工作目录内完成具体任务，验证成果并记录可复用经验。' },
@@ -34,10 +35,11 @@ function text(value: unknown, max = 16000): asserts value is string { if (typeof
 function id(value: unknown): asserts value is string { text(value, 80); if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value)) throw new Error('Role/step identifiers must use letters, digits, _ or -'); }
 export function validateTeamConfig(input: unknown): TeamConfig {
   if (!input || typeof input !== 'object') throw new Error('Invalid team configuration');
-  const c = structuredClone(input) as TeamConfig; keys(c, ['members','edges','workflow']);
+  const c = structuredClone(input) as TeamConfig; keys(c, ['members','edges','workflow','startup']);
+  if(c.startup!==undefined) validateStartupLayers(c.startup);
   if (!Array.isArray(c.members) || !c.members.length || c.members.length > 24 || !Array.isArray(c.edges)) throw new Error('Invalid members/edges');
   const roles = new Set<string>();
-  for (const member of c.members) { keys(member, ['role','name','instructions','model','context_profiles','context_atoms']); id(member.role); text(member.name, 80); text(member.instructions); if (member.model !== undefined) text(member.model, 200); if (member.context_atoms) { keys(member.context_atoms,['project','mission','seat','slice']); for(const ids of Object.values(member.context_atoms)) { if(!Array.isArray(ids)) throw new Error('Invalid context selection'); ids.forEach(v => text(v,200)); } } if (member.context_profiles) { keys(member.context_profiles, ['fresh','handover','post-compaction']); for (const value of Object.values(member.context_profiles)) text(value, 200); } if (roles.has(member.role)) throw new Error('Duplicate role'); roles.add(member.role); }
+  for (const member of c.members) { keys(member, ['role','name','instructions','model','context_profiles','context_atoms','startup']); id(member.role); text(member.name, 80); text(member.instructions); if(member.startup!==undefined) validateStartupBlock(member.startup); if (member.model !== undefined) text(member.model, 200); if (member.context_atoms) { keys(member.context_atoms,['project','mission','seat','slice']); for(const ids of Object.values(member.context_atoms)) { if(!Array.isArray(ids)) throw new Error('Invalid context selection'); ids.forEach(v => text(v,200)); } } if (member.context_profiles) { keys(member.context_profiles, ['fresh','handover','post-compaction']); for (const value of Object.values(member.context_profiles)) text(value, 200); } if (roles.has(member.role)) throw new Error('Duplicate role'); roles.add(member.role); }
   for (const edge of c.edges) { keys(edge, ['from','to']); if (!roles.has(edge.from) || !roles.has(edge.to)) throw new Error('Unknown edge role'); }
   const w = c.workflow; if (!w || typeof w !== 'object') throw new Error('Invalid workflow'); keys(w, ['entry','steps','max_hops','exception_routing','watchdogs']);
   if (!Array.isArray(w.steps) || !w.steps.length || w.steps.length > 64 || !Number.isInteger(w.max_hops) || w.max_hops < 1 || w.max_hops > 1000) throw new Error('Invalid steps/hop limit');
@@ -61,7 +63,15 @@ export function validateTeamConfig(input: unknown): TeamConfig {
     if (s.acceptance) { keys(s.acceptance, ['candidate','verdicts','evidence_ref']); text(s.acceptance.candidate); text(s.acceptance.evidence_ref); if (!Array.isArray(s.acceptance.verdicts) || !s.acceptance.verdicts.length) throw new Error('Acceptance verdicts required'); s.acceptance.verdicts.forEach(v => text(v, 200)); }
     if (s.re_present_after_seconds !== undefined && (!Number.isInteger(s.re_present_after_seconds) || s.re_present_after_seconds < 1 || s.re_present_after_seconds > 86400)) throw new Error('Invalid re-presentation delay');
     if (s.re_present_max_seconds !== undefined && (!Number.isInteger(s.re_present_max_seconds) || s.re_present_max_seconds < (s.re_present_after_seconds ?? Infinity) || s.re_present_max_seconds > 604800)) throw new Error('Invalid re-presentation maximum');
+    if (s.re_present_after_seconds !== undefined && (s.allowed_exits && !s.allowed_exits.includes('waiting') || s.next_hop?.on?.waiting)) throw new Error('waiting_re_presentation_unreachable: waiting must park before it can have a deadline');
     if (s.next_hop) { keys(s.next_hop, ['on','mode','suggested_roles']); if (s.next_hop.mode && !['require','forbid'].includes(s.next_hop.mode)) throw new Error('Invalid next-hop mode'); if (s.next_hop.suggested_roles && (!Array.isArray(s.next_hop.suggested_roles) || s.next_hop.suggested_roles.some(r => !roles.has(r) || !w.steps.some(step => step.actor_role===r)))) throw new Error('Unknown suggested role');  for (const [exit,target] of Object.entries(s.next_hop.on ?? {})) { if (!exits.includes(exit) || !steps.has(target) || s.allowed_exits && !s.allowed_exits.includes(exit as WorkflowExit)) throw new Error('Invalid next-hop route: unsupported exit or target'); const role = steps.get(target)!.gate?.target === 'human:user' ? steps.get(target)!.actor_role : steps.get(target)!.gate?.target ?? steps.get(target)!.actor_role; if (role !== s.actor_role && !c.edges.some(e => e.from === s.actor_role && e.to === role)) throw new Error('Route requires a declared team edge'); } }
+  }
+  for (const s of w.steps) {
+    const allowed = s.allowed_exits;
+    if (allowed && !allowed.includes('done') && !allowed.some(exit => s.next_hop?.on?.[exit]) &&
+        !(allowed.includes('handoff') && (w.steps.some(step => step.depends_on !== undefined) || nextStep(w,s,'handoff')))) {
+      throw new Error(`step_cannot_finish: ${s.id}`);
+    }
   }
   const visiting = new Set<string>(), visited = new Set<string>();
   function visit(key: string) { if (visiting.has(key)) throw new Error('Dependency cycle'); if (visited.has(key)) return; visiting.add(key); for (const dep of steps.get(key)!.depends_on ?? []) visit(dep); visiting.delete(key); visited.add(key); }

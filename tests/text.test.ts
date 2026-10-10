@@ -7,6 +7,8 @@ import { WorkspaceService } from '../src/application/workspace';
 import { MaterialLibrary } from '../src/domains/materials/library';
 import { TextAgent } from '../src/domains/conversation/text-agent';
 import type { ChatEvent } from '../src/contracts';
+import { platformTools } from '../src/application/platform-tools';
+import type { TaskExecutionService } from '../src/application/task-execution';
 
 const codec = { encrypt: (value: string) => Buffer.from(value).toString('base64'), decrypt: (value: string) => Buffer.from(value, 'base64').toString() };
 test('local text settings never expose secrets, retain keys only for the same endpoint, and persist independently of voice', () => {
@@ -62,7 +64,7 @@ test('actual Pi harness calls platform tools, consumes results, streams text and
     assert.equal(requests[0].authorization, 'Bearer text-only-key');
     assert.equal(requests[0].body.model, 'test-text');
     assert.ok(requests[1].body.messages.some((m: any) => m.role === 'tool' && m.content.includes('pending')));
-    assert.deepEqual(requests[0].body.tools.map((t: any) => t.function.name).sort(), ['list_tasks', 'save_request', 'list_teams', 'create_team', 'dispatch_task', 'get_task_execution', 'answer_task', 'cancel_task', 'retry_task', 'configure_team_context', 'accept_task', 'revise_task', 'approve_task_step', 'rotate_task_session', 'search_team_memory', 'list_team_templates', 'get_team_template', 'get_team', 'save_team_template'].sort());
+    assert.deepEqual(requests[0].body.tools.map((t: any) => t.function.name).sort(), ['search_history', 'read_history', 'list_tasks', 'save_request', 'list_teams', 'create_team', 'dispatch_task', 'get_task_execution', 'answer_task', 'cancel_task', 'retry_task', 'configure_team_context', 'accept_task', 'revise_task', 'approve_task_step', 'rotate_task_session', 'search_team_memory', 'list_team_templates', 'get_team_template', 'get_team', 'save_team_template'].sort());
     assert.ok(records.includes('共有一个待派发任务。'));
     assert.ok(events.some(e => e.type === 'delta'));
     workspace.recordInteraction('user', '补充语音：发布目标是桌面客户端。', 'voice');
@@ -93,21 +95,33 @@ test('text cancellation aborts a pending provider request and releases the foreg
 
 test('native Pi threshold compaction persists a summary and raw history, then restores the compacted session', async () => {
   const requests: any[] = [];
+  let recalling=false,recallStep=0;
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk; requests.push(JSON.parse(body));
-    const text = JSON.stringify(requests.at(-1).messages).includes('context summarization assistant') ? '## Goal\n保留原始预算约束：两千元。\n## Next Steps\n继续产品发布计划。' : '继续沿用两千元预算。';
+    const summarizing=JSON.stringify(requests.at(-1).messages).includes('context summarization assistant');
+    const text = summarizing ? '## Goal\n保留原始预算约束：两千元。\n## Next Steps\n继续产品发布计划。' : '继续沿用两千元预算。';
+    let delta:unknown={content:text},finish='stop';
+    if(recalling && !summarizing && recallStep<2) {
+      const name=recallStep===0 ? 'search_history' : 'read_history';
+      const result=recallStep===1 ? JSON.parse(requests.at(-1).messages.findLast((m:any)=>m.role==='tool').content) : undefined;
+      const args=recallStep===0 ? {query:'海棠厅'} : {message_id:result.matches[0].message_id,before:0,after:0};
+      delta={tool_calls:[{index:0,id:'recall-'+recallStep++,type:'function',function:{name,arguments:JSON.stringify(args)}}]};finish='tool_calls';
+    }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) + '\n\n');
-    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n');
+    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');
+    res.write('data: ' + JSON.stringify({ id: 'compact', choices: [{ index: 0, delta: {}, finish_reason: finish }] }) + '\n\n');
     res.end('data: [DONE]\n\n');
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const db = openDatabase(':memory:'), store = new TextModelStore(db, codec);
+  const workspace=new WorkspaceService(db,new MaterialLibrary(db,'/unused'));
+  workspace.recordInteraction('user','最早的语音补充：发布会地点是海棠厅。','voice');
+  const execute=platformTools(workspace,{} as TaskExecutionService,()=>{});
   store.save({ protocol: 'openai-completions', baseUrl: 'http://127.0.0.1:' + (server.address() as { port: number }).port + '/v1', model: 'compact-test' });
   const legacy = Array.from({ length: 16 }, (_, i) => ({ role: 'user', content: (i === 0 ? '原始预算两千元。' : '补充需求。') + 'history '.repeat(250), timestamp: i }));
   db.prepare('INSERT INTO settings VALUES (?,?)').run('textTranscript', JSON.stringify(legacy));
   const events: ChatEvent[] = [];
-  const create = () => new TextAgent(db, store, () => ({}), e => events.push(e), () => {}, () => '', { contextWindow: 8192, reserveTokens: 4096, keepRecentTokens: 512 });
+  const create = () => new TextAgent(db, store, execute, e => events.push(e), (role,text,sessionId)=>workspace.recordInteraction(role,text,'text',sessionId), () => '', { contextWindow: 8192, reserveTokens: 4096, keepRecentTokens: 512 });
   const agent = create();
   try {
     await agent.send('请继续');
@@ -118,7 +132,9 @@ test('native Pi threshold compaction persists a summary and raw history, then re
     assert.ok(compaction); assert.ok(compaction.summary.includes('两千元'));
     assert.ok(entries.some((e: any) => e.type === 'message' && JSON.stringify(e.message).includes('原始预算两千元')));
     const header = entries.find((e: any) => e.type === 'session').id;
-    await create().send('重启后继续');
+    recalling=true; await create().send('重启后继续：查一下会场原话');
+    assert.equal(recallStep,2);assert.equal(events.some(e=>e.type==='error'),false,JSON.stringify(events));
+    assert.ok(requests.at(-1).messages.some((m:any)=>m.role==='tool' && m.content.includes('最早的语音补充')));
     const restored = JSON.parse(String(db.prepare('SELECT value FROM settings WHERE key=?').get('piSessionEntries')!.value));
     assert.ok(!JSON.stringify(requests.at(-1).messages).includes('原始预算两千元。'));
     assert.ok(requests.at(-1).messages.length < legacy.length);

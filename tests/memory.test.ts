@@ -65,3 +65,26 @@ test('core entry preserves memory and queue across reopen and never starts work 
     } finally { await reopened.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('a late first projection of an older completion cannot replace a newer seat recap or its advisories', async()=>{
+  const {mkdtempSync,readFileSync,readdirSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+  const {TeamRegistry}=await import('../src/domains/teams/registry');
+  const {TeamKnowledge}=await import('../src/domains/memory/team-knowledge');
+  const {ExecutionQueue}=await import('../src/domains/orchestration/queue');
+  const root=mkdtempSync(join(tmpdir(),'orbit-late-recap-')),db=openCoreDatabase(join(root,'core.sqlite'));
+  try {
+    const teams=new TeamRegistry(db,join(root,'teams')),team=teams.create('recap'),seat=teams.taskSeats(team.id,'task')[0];
+    const queue=new ExecutionQueue(db),knowledge=new TeamKnowledge(new MemoryStore(db),teams,db);
+    const completed=(requestId:string)=>{queue.enqueue({requestId,taskId:'task',source:'user',destination:seat.sessionId,body:'work'});const item=queue.claimNext([seat.sessionId],1)!;queue.finish(item.id,item.generation!,{kind:'completed',summary:requestId,evidenceRef:join(root,requestId+'.json')});return queue.get(item.id);};
+    const older=completed('older'),newer=completed('newer');
+    const evidence=(recap:string)=>({summary:recap,artifacts:[],nativeId:'test',transcript:'',recap,lessons:'source-backed lesson'});
+    knowledge.record(seat,newer,evidence('## Decisions\nNewer decision with rationale.'));
+    knowledge.record(seat,older,evidence('Old informal notes, no decision section.'));
+    const seatRoot=teams.seatRoot(seat);
+    assert.match(readFileSync(join(seatRoot,'RECAP.md'),'utf8'),/Newer decision/);
+    assert.deepEqual(JSON.parse(readFileSync(join(seatRoot,'RECAP.advisories.json'),'utf8')),[]);
+    assert.equal(readdirSync(join(seatRoot,'recap-superseded')).length,2);
+    assert.equal(new MemoryStore(db).list({kind:'team',id:team.id}).length,2);
+  } finally {db.close();rmSync(root,{recursive:true,force:true});}
+});

@@ -5,7 +5,7 @@ import { mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { defaultTeamConfig, validateTeamConfig, type TeamConfig } from '../workflows/spec';
 import { transaction } from '../../infrastructure/database';
-export interface Seat { id: string; teamId: string; role: string; name: string; sessionId: string; nativeId: string | null; runtime: 'codex'; generation: string; workspace: string; instructions: string; model?: string; context_atoms?: Partial<Record<'project' | 'mission' | 'seat' | 'slice', string[]>>; context_profiles?: Partial<Record<import('../context/types').Situation,string>> }
+export interface Seat { id: string; teamId: string; role: string; name: string; sessionId: string; nativeId: string | null; runtime: 'codex'; generation: string; workspace: string; instructions: string; model?: string; startup?: import('../runtime/startup').StartupBlock; context_atoms?: Partial<Record<'project' | 'mission' | 'seat' | 'slice', string[]>>; context_profiles?: Partial<Record<import('../context/types').Situation,string>> }
 export interface LocalTeam { id: string; name: string; workspace: string; seats: Seat[]; contextPack?: string; config: TeamConfig }
 /** Session, node and native runtime identity are separate persisted facts. */
 export class TeamRegistry {

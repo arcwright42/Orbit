@@ -1,8 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import type { StartupProof } from './startup-proof';
 
 export interface BackendTool { name: string; description: string; input: Record<string, string> }
 export const backendTools: BackendTool[] = [
+  { name:'startup_proof',description:'按当前启动挑战提交上下文接收回执；READY 不是核验。只有当前执行凭证、会话及代次有效。',input:{challengeId:'当前挑战 ID',answer:'启动文本中的精确 answer',sessionId:'启动挑战中的执行会话 ID',generation:'启动挑战中的席位代次'} },
   { name:'read_context',description:'启动、交接或原生压缩后重新读取当前上下文 profile、席位记录与团队经验',input:{} },
   { name: 'list_work', description: '查询当前任务的执行义务与真实状态，不跨任务', input: { after: '可选队列偏移', limit: '1–100，默认20' } },
   { name: 'get_work', description: '读取同一任务的一个义务及其上下文', input: { itemId: '义务 ID，默认当前义务' } },
@@ -20,6 +22,7 @@ export interface BackendReply { value: unknown; closure?: Record<string, unknown
  * This is a platform transport, not an agent harness. Closure is staged until native exit.
  */
 export class BackendAttempt {
+  private startup?: StartupProof;
   private server?: Server;
   private token = randomBytes(32).toString('hex');
   private endpoint = '';
@@ -29,6 +32,7 @@ export class BackendAttempt {
   private receipts = new Map<string, { payload: string; reply: unknown }>();
   constructor(private invoke: (name: string, input: Record<string, unknown>) => BackendReply | Promise<BackendReply>) {}
   get staged() { return this.closure; }
+  orientation(proof:StartupProof) { this.startup=proof; }
   async open() {
     if (this.server) return;
     this.server = createServer(async (req, res) => {
@@ -43,7 +47,9 @@ export class BackendAttempt {
         if (previous) { if (previous.payload !== payload) throw new Error('Request ID reused with different input'); return previous.reply; }
         if (this.revoked) throw new Error('Execution ended');
         if (this.receipts.size >= 1000) throw new Error('Tool request limit reached');
-        const result = name === 'list_tools' ? { value: backendTools } : await this.invoke(name, input);
+        if(this.startup?.required && !this.startup.verified && !['list_tools','startup_proof','read_context'].includes(name)) throw new Error('请先提交当前 startup_proof，再调用工作工具');
+        if(name==='startup_proof' && !this.startup) throw new Error('No startup challenge for this launch');
+        const result = name === 'list_tools' ? { value: backendTools } : name==='startup_proof' ? {value:this.startup!.verify(input)} : await this.invoke(name, input);
         if (result.closure) {
           if (this.closure && JSON.stringify(this.closure) !== JSON.stringify(result.closure)) throw new Error('结束意图已提交，不可提交冲突的结束意图');
           this.closure = result.closure;

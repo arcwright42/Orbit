@@ -88,7 +88,7 @@ export interface OrbitApi {
 
 export type VoiceEvent =
   | { type: 'state'; state: 'off' | 'waiting' | 'connecting' | 'listening' }
-  | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
+  | { type: 'transcript'; role: 'user' | 'assistant'; text: string; sessionId?: string }
   | { type: 'audio'; data: string }
   | { type: 'interrupt' }
   | { type: 'error'; text: string };
