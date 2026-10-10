@@ -7,7 +7,8 @@ import { openCoreDatabase } from '../src/infrastructure/core-database';
 import { ExecutionQueue } from '../src/domains/orchestration/queue';
 import { Watchdog, type WatchdogSpec } from '../src/domains/orchestration/watchdog';
 import { validateMarkdownAddressability,recapAdvisories } from '../src/domains/context/files';
-import { parseNativeContext } from '../src/domains/runtime/native-context';
+import { parseNativeContext, predecessorHistory } from '../src/domains/runtime/native-context';
+import { DatabaseSync } from 'node:sqlite';
 import { checkCodexReady } from '../src/domains/runtime/readiness';
 import type { Seat } from '../src/domains/teams/registry';
 
@@ -70,4 +71,30 @@ test('native successor protocol closes stdin, requires READY and leaves binding 
     const teams=new TeamRegistry(db,join(root,'teams')),team=teams.create('test'),seat=teams.taskSeats(team.id,'task')[0];teams.bindNative(seat.sessionId,seat.generation,'old-native-123');
     const adapter=new CodexRuntime(teams,seat.sessionId,join(root,'evidence'),()=>{},undefined,binary);const ready=await adapter.prepareSuccessor(new AbortController().signal,'handover marker');assert.equal(ready.nativeId,'fresh-native-123');assert.equal(teams.seat(seat.sessionId).nativeId,'old-native-123');
   }finally{db.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('successor receives predecessor exchanges even without completed evidence and archives their provenance', async () => {
+  const {TeamRegistry}=await import('../src/domains/teams/registry');const {CodexRuntime}=await import('../src/domains/runtime/codex');
+  const root=mkdtempSync(join(tmpdir(),'orbit-record-')),db=openCoreDatabase(join(root,'core.sqlite')),binary=join(root,'codex');
+  const native = new DatabaseSync(join(root,'state_5.sqlite')), record = join(root,'rollout.jsonl');
+  try {
+    native.exec('CREATE TABLE threads (id TEXT PRIMARY KEY,rollout_path TEXT)'); native.prepare('INSERT INTO threads VALUES (?,?)').run('failed-native-123',record);
+    writeFileSync(record,[
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'原任务：修复导出问题'}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'失败前已查明 CSV 引号转义，补丁尚未应用。'}]}},
+      {type:'event_msg',payload:{type:'turn_failed',message:'network error'}},
+    ].map(e=>JSON.stringify(e)).join('\n')+'\n{partial');
+    const captured = predecessorHistory('failed-native-123',root);
+    assert.match(captured,/补丁尚未应用/); assert.match(captured,/rollout.jsonl/); assert.match(captured,/replayed from record/);
+    assert.match(predecessorHistory('missing-native-123',root),/unavailable/);
+    writeFileSync(binary,`#!/usr/bin/env node\nif(process.argv.includes('--version') || process.argv.includes('status'))process.exit(0);let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{if(!text.includes('补丁尚未应用') || !process.argv.includes('explicit-test-model'))process.exit(2);console.log(JSON.stringify({type:'thread.started',thread_id:'new-native-123'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'READY'}}));});`);chmodSync(binary,0o700);
+    const teams=new TeamRegistry(db,join(root,'teams')),team=teams.create('test',{members:[{role:'worker',name:'worker',instructions:'work',model:'explicit-test-model'}],edges:[],workflow:{entry:'work',max_hops:4,steps:[{id:'work',actor_role:'worker',objective:'work'}]}}),seat=teams.taskSeats(team.id,'task')[0];
+    teams.bindNative(seat.sessionId,seat.generation,'failed-native-123');
+    const adapter=new CodexRuntime(teams,seat.sessionId,join(root,'evidence'),()=>{},undefined,binary,undefined,id=>predecessorHistory(id,root));
+    const ready=await adapter.prepareSuccessor(new AbortController().signal,'task context');
+    assert.equal(ready.nativeId,'new-native-123'); assert.equal(teams.seat(seat.sessionId).nativeId,'failed-native-123');
+    const {readFileSync,readdirSync}=await import('node:fs');
+    const saved = readdirSync(join(root,'evidence')).filter(f=>f.endsWith('.startup.md')).map(f=>readFileSync(join(root,'evidence',f),'utf8')).join('\n');
+    assert.match(saved,/补丁尚未应用/); assert.match(saved,/rollout.jsonl/);
+  } finally { native.close();db.close();rmSync(root,{recursive:true,force:true}); }
 });

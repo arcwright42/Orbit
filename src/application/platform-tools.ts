@@ -6,10 +6,12 @@ import type { PlatformExecute } from '../domains/conversation/tools';
 function string(value: unknown) { if (typeof value !== 'string' || value.length > 16000) throw new Error('Invalid tool argument'); return value; }
 /** Shared application boundary for Pi and Qwen. Neither harness owns business orchestration. */
 export function platformTools(workspace: WorkspaceService, execution: TaskExecutionService, changed: () => void): PlatformExecute {
-  return async (name, args, callId) => {
+  const invoke:PlatformExecute = async (name, args, callId) => {
     const input = (args ?? {}) as Record<string, unknown>; if (typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid tool arguments');
     const itemId = input.itemId === undefined ? undefined : string(input.itemId);
     switch (name) {
+      case 'search_history': return workspace.history.search(input);
+      case 'read_history': return workspace.history.read(input);
       case 'list_tasks': return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
       case 'save_request': {
         const requestId = createHash('sha256').update(callId).digest('hex');
@@ -36,5 +38,11 @@ export function platformTools(workspace: WorkspaceService, execution: TaskExecut
       default: throw new Error('Unsupported tool');
     }
     return execution.detail(string(input.taskId));
+  };
+  return async (name,args,callId) => {
+    let result;
+    try { result=await invoke(name,args,callId); }
+    catch(error) {workspace.history.recordTool(callId,name,args,{error:error instanceof Error ? error.message : 'Tool failed'});throw error;}
+    workspace.history.recordTool(callId,name,args,result);return result;
   };
 }

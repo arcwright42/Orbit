@@ -51,19 +51,22 @@ app.whenReady().then(() => {
       return action(...args);
     });
   };
-  const emitVoice = (event: VoiceEvent) => { if (event.type === 'transcript') { workspace.recordInteraction(event.role, event.text, 'voice'); window?.webContents.send('workspace:changed'); } if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
+  const emitVoice = (event: VoiceEvent) => { if (event.type === 'transcript') { workspace.recordInteraction(event.role, event.text, 'voice',event.sessionId); window?.webContents.send('workspace:changed'); } if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
   const executePlatform = platformTools(workspace, execution, () => window?.webContents.send('workspace:changed'));
-  const history = () => historyContext(workspace.snapshot().messages,
-    contextPolicy.voiceHistoryTokens - estimateTokens({ instructions: foregroundPrompt, tools: foregroundTools }));
+  const history = () => {
+    const clues = workspace.history.clues();
+    return clues + historyContext(workspace.snapshot().messages,
+      contextPolicy.voiceHistoryTokens - estimateTokens({ instructions: foregroundPrompt + clues, tools: foregroundTools }));
+  };
   const voice = new RealtimeVoice(emitVoice, executePlatform, undefined, history);
   const modelSettings = new TextModelStore(db, {
     encrypt: value => { if (!safeStorage.isEncryptionAvailable() || process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') throw new Error('系统密钥存储不可用，无法保存 API Key。'); return safeStorage.encryptString(value).toString('base64'); },
     decrypt: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
   });
   const emitChat = (event: ChatEvent) => { if (window && !window.isDestroyed()) window.webContents.send('chat:event', event); };
-  const textAgent = new TextAgent(db, modelSettings, executePlatform, emitChat, (role, text) => {
-    workspace.recordInteraction(role, text, 'text'); voice.refreshHistory(); window?.webContents.send('workspace:changed');
-  }, () => historyContext(workspace.snapshot().messages.filter(m => m.channel !== 'text'), contextPolicy.textWindowTokens / 4));
+  const textAgent = new TextAgent(db, modelSettings, executePlatform, emitChat, (role, text, sessionId) => {
+    workspace.recordInteraction(role, text, 'text',sessionId); voice.refreshHistory(); window?.webContents.send('workspace:changed');
+  }, () => workspace.history.clues() + historyContext(workspace.snapshot().messages.filter(m => m.channel !== 'text'), contextPolicy.textWindowTokens / 4));
   handle('model:read', () => modelSettings.public());
   handle('model:save', value => { if (textAgent.busy) throw new Error('请先停止当前文本回复，再修改模型。'); return modelSettings.save(value as TextModelInput); });
   handle('chat:stop', () => textAgent.stop());

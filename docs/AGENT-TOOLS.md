@@ -2,6 +2,15 @@
 
 模板是可复用的角色/流程配方；团队是持久成员与经验的实例；任务是一次具体工作；执行步骤是后台队列义务。Pi 文本和 Qwen 语音调用同一个 application/platform-tools.ts，不分别实现业务规则。
 
+## 长期对话历史
+
+| 工具 | 输入 | 返回 / 行为 |
+| --- | --- | --- |
+| search_history | query、limit?、room_id?、include_tools? | 默认当前 Room 的用户/助手对话，跨语音和文本；返回 message_id、sequence、时间和摘录。include_tools=true 同时查询新保存的工具参数与结果 |
+| read_history | message_id、before?、after?；或 cursor、limit?；room_id?、include_tools? | 读取原文与邻近记录，或按 sequence 向后分页。next_cursor / has_more 表示后续记录；context_truncated 表示本页因输出预算缩减了邻近范围 |
+
+长消息返回 text_length / next_text_offset；同一 message_id 配合 before=0、after=0、text_offset 继续读取，直到不再返回 next_text_offset。原文仍完整保存，工具输出的截断不删除历史。Pi 原生压缩与 Qwen 短上下文都不影响该库；不需要模型管理内部 Session ID。Room 当前只有一个默认实例，不提供任意跨 Room 读取。
+
 ## 模板与团队
 
 | 工具 | 输入 | 返回 / 行为 |
@@ -61,6 +70,7 @@
 | --- | --- |
 | list_work / get_work | 当前任务的执行义务、状态及最近事件 |
 | read_context | 读取当前情境的 profile、席位记录及团队经验，供压缩后恢复 |
+| startup_proof | 用本次 challengeId/answer/sessionId/generation 提交身份绑定的启动回执；未声明时无挑战。普通 READY 不等于已核验 |
 | get_team | 本团队角色和经过审核隔离过滤的交接目标 |
 | search_team_memory / read_team_memory | 本团队经验及来源 |
 | report_progress | 写入当前义务的进度事件 |
@@ -79,3 +89,25 @@ get_team 同时返回 contextCatalog.profiles/atoms。导入上下文包后，co
 answer_task 对普通问题保持回答并继续；对 human:exception 仅记录处理意见。明确恢复时再 retry_task（新 packet 续跑），或 rotate_task_session（先验证新会话再提交接替）。桌面提供同样的记录意见、重试、接替按钮。新建内置模板 revision 2 默认包含协调者；旧实例配置不被模板升级覆盖。
 
 complete_work/handoff_work 可携带 acceptance:{candidate,verdict,evidence_ref}，必须满足步骤契约。后台完成仍需原生进程退出和真实成果核验。get_work 提供 watchdog 等事件；read_context 复用原生压缩事实，不实现另一个压缩器。
+
+## 本地启动与成果策略配置
+
+config.startup 支持 source_root（已有本机绝对目录，省略为任务目录）、agent/profile/team/pod/operator 启动块和 culture_file。成员可提供 startup 块。有效顺序为 agent→profile→culture→team→pod→member→operator，不去重。每个块：
+
+```json
+{
+  "files": [
+    { "path": "guidance.md", "delivery_hint": "guidance_merge" },
+    { "path": "skills/review/SKILL.md", "delivery_hint": "skill_install" },
+    { "path": "startup.md", "delivery_hint": "send_text", "required": true }
+  ],
+  "actions": [
+    { "type": "send_text", "value": "先检查任务约束与资料", "idempotent": true },
+    { "type": "startup_proof", "value": "authenticated", "idempotent": true }
+  ]
+}
+```
+
+applies_on 默认 fresh_start 和 restore；非幂等动作只能 fresh_start。phase 支持 after_files / after_ready，在 exec 启动 stdin 中按该顺序交付。默认 auto 根据 AGENTS.md / SKILL.md / 普通文件选择指导合并、完整技能安装、文本交付。只操作任务目录内所属的资源，不覆盖用户修改。authenticated 为可选声明，默认 none；证明用于区分内容回执和进程 READY，不声称证明理解。
+
+artifact-pool-ready 声明 context.pools；edge-artifact-required 声明 context.source 和 context.target。每个池用 path 或 paths 指定任务目录内相对路径，可设置 extensions（默认 .md）、include_statuses、key_field（默认 entry）、ignore_names、recursive、include_malformed_frontmatter。README.md 和 .DS_Store 忽略。下游任一文件原文包含某个源 key 才满足该源的引用关系；下游 include_statuses 不会隐藏已有引用。旧 edge 策略的 paths 不再当作足够的配置。

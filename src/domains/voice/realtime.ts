@@ -2,8 +2,10 @@ import { contextPolicy } from '../conversation/context-budget';
 import { foregroundPrompt, foregroundTools } from '../conversation/tools';
 import WebSocket from 'ws';
 import type { VoiceEvent } from '../../contracts';
+import { randomUUID } from 'node:crypto';
 
 export class RealtimeVoice {
+  private sessionId = '';
   private socket?: WebSocket;
   private ready = false;
   private speaking = false;
@@ -26,6 +28,8 @@ export class RealtimeVoice {
     url.searchParams.set('model', process.env.QWEN_REALTIME_MODEL ?? 'qwen-audio-3.1-realtime-plus');
     const ws = this.connect(url, key);
     this.socket = ws;
+    this.sessionId = randomUUID();
+    const sessionId = this.sessionId;
     this.emit({ type: 'state', state: 'connecting' });
     const timeout = setTimeout(() => { if (this.socket === ws && !this.ready) { this.emit({ type: 'error', text: '语音连接超时，请重试。' }); this.stop(); } }, 15000);
     ws.on('open', () => { if (this.socket !== ws) return; this.send({ type: 'session.update', session: {
@@ -42,11 +46,11 @@ export class RealtimeVoice {
         if (e.type === 'input_audio_buffer.speech_started') { this.speaking = true; this.emit({ type: 'interrupt' }); }
         if (e.type === 'input_audio_buffer.speech_stopped') this.speaking = false;
         if (e.type === 'response.created') this.responding = true;
-        if (e.type === 'conversation.item.input_audio_transcription.completed') this.emit({ type: 'transcript', role: 'user', text: e.transcript });
+        if (e.type === 'conversation.item.input_audio_transcription.completed') this.emit({ type: 'transcript', role: 'user', text: e.transcript, sessionId });
         if (e.type === 'response.text.done' || e.type === 'response.audio_transcript.done') {
           const text = e.text ?? e.transcript;
           const key = JSON.stringify([e.response_id, e.item_id, e.content_index, text]);
-          if (!this.transcripts.has(key)) { this.transcripts.add(key); this.emit({ type: 'transcript', role: 'assistant', text }); }
+          if (!this.transcripts.has(key)) { this.transcripts.add(key); this.emit({ type: 'transcript', role: 'assistant', text, sessionId }); }
         }
         if (e.type === 'response.audio.delta') this.emit({ type: 'audio', data: e.delta });
         if (e.type === 'response.function_call_arguments.done') this.calls.set(e.call_id, { name: e.name, arguments: e.arguments });
@@ -57,7 +61,7 @@ export class RealtimeVoice {
             this.toolBatches++;
             for (const [call_id, call] of calls) {
               let output;
-              try { if (this.completedCalls.has(call_id)) output = this.completedCalls.get(call_id); else { output = await this.execute(call.name, JSON.parse(call.arguments), call_id); if (this.socket !== ws) return; this.completedCalls.set(call_id, output); } }
+              try { if (this.completedCalls.has(call_id)) output = this.completedCalls.get(call_id); else { output = await this.execute(call.name, JSON.parse(call.arguments), `voice:${sessionId}:${call_id}`); if (this.socket !== ws) return; this.completedCalls.set(call_id, output); } }
               catch { output = { error: '工具执行失败，请检查参数或重试。' }; }
               if (this.socket !== ws) return;
               this.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id, output: JSON.stringify(output) } });

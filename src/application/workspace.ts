@@ -7,12 +7,15 @@ import { validateRequest } from '../domains/tasks/task';
 import { intakeReceipt } from '../domains/conversation/intake';
 import { MaterialLibrary } from '../domains/materials/library';
 import { normalizeOpenRigUrl, OpenRigCatalog } from '../domains/runtime/openrig';
+import { ConversationHistory } from '../domains/conversation/history';
 
 export class WorkspaceService {
   private tasks: TaskRepository;
+  readonly history: ConversationHistory;
   constructor(private db: DatabaseSync, readonly materials: MaterialLibrary) {
     this.tasks = new TaskRepository(db);
     db.exec('CREATE TABLE IF NOT EXISTS interactions (id TEXT PRIMARY KEY,payload TEXT NOT NULL)');
+    this.history = new ConversationHistory(db);
   }
 
   snapshot(): Workspace {
@@ -25,10 +28,13 @@ export class WorkspaceService {
     };
   }
 
-  recordInteraction(role: 'user' | 'assistant', text: string, channel: Message['channel'] = 'platform') {
+  recordInteraction(role: 'user' | 'assistant', text: string, channel: Message['channel'] = 'platform', sessionId?: string) {
     if (!text.trim()) return;
-    const message: Message = { id: randomUUID(), role, channel, text: text.slice(0, 64000), createdAt: new Date().toISOString() };
-    this.db.prepare('INSERT INTO interactions VALUES (?,?)').run(message.id, JSON.stringify(message));
+    const message: Message = { id: randomUUID(), role, channel, text, createdAt: new Date().toISOString() };
+    transaction(this.db, () => {
+      this.db.prepare('INSERT INTO interactions VALUES (?,?)').run(message.id, JSON.stringify(message));
+      this.history.append(message,sessionId);
+    });
   }
   submit(value: unknown): Workspace {
     const input = validateRequest(value);
@@ -52,6 +58,7 @@ export class WorkspaceService {
       const receipt = intakeReceipt(task, randomUUID());
       for (const message of [user, receipt]) {
         this.db.prepare('INSERT INTO messages VALUES (?, ?, ?)').run(message.id, task.id, JSON.stringify(message));
+        this.history.append(message);
       }
     });
     return this.snapshot();

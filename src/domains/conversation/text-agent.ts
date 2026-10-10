@@ -19,7 +19,7 @@ export class TextAgent {
   private stopped = false;
   get busy() { return !!this.running; }
   constructor(private db: DatabaseSync, private settings: TextModelStore, private execute: PlatformExecute,
-    private emit: (event: ChatEvent) => void, private record: (role: 'user' | 'assistant', text: string) => void,
+    private emit: (event: ChatEvent) => void, private record: (role: 'user' | 'assistant', text: string, sessionId?: string) => void,
     private history: () => string, private policy: SessionPolicy = defaultPolicy) {}
   send(text: string): Promise<void> {
     if (this.busy) return Promise.reject(new Error('文本回复正在进行，请等待或停止回复。'));
@@ -55,7 +55,7 @@ export class TextAgent {
         parameters: tool.parameters as TSchema, executionMode: 'sequential',
         execute: async (id, args, signal) => {
           if (signal?.aborted) throw new Error('已停止');
-          const result = await this.execute(tool.name, args, 'text:' + id);
+          const result = await this.execute(tool.name, args, `text:${manager?.getHeader()?.id}:${id}`);
           return { content: [{ type: 'text', text: JSON.stringify(result) ?? 'null' }], details: undefined };
         } }));
       const stored = this.db.prepare('SELECT value FROM settings WHERE key=?').get('piSessionEntries');
@@ -105,11 +105,11 @@ export class TextAgent {
         if (event.type === 'message_end' && event.message.role === 'assistant') {
           const message = event.message;
           const answer = message.content.filter(p => p.type === 'text').map(p => p.text).join('');
-          if (answer && message.stopReason !== 'error' && message.stopReason !== 'aborted') this.record('assistant', answer);
+          if (answer && message.stopReason !== 'error' && message.stopReason !== 'aborted') this.record('assistant', answer,manager!.getHeader()?.id);
         }
       });
       this.persist(manager);
-      this.record('user', text);
+      this.record('user', text,manager.getHeader()?.id);
       await session.prompt(text);
       if (session.agent.state.errorMessage && !this.stopped) throw new Error('provider failed');
     } catch {

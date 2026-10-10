@@ -28,7 +28,24 @@ export class ExecutionQueue {
   setProjector(projector: (item: QueueItem, result: ExecutionResult) => void) { this.projector = projector; }
   constructor(private db: DatabaseSync) {
     db.exec('CREATE TABLE IF NOT EXISTS queue_pauses (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
-    db.exec('CREATE TABLE IF NOT EXISTS queue_wakes (item_id TEXT PRIMARY KEY REFERENCES execution_queue(id), due_at INTEGER NOT NULL, delay_seconds INTEGER NOT NULL, max_seconds INTEGER NOT NULL)');
+    db.exec('CREATE TABLE IF NOT EXISTS queue_wakes (item_id TEXT PRIMARY KEY REFERENCES execution_queue(id), due_at INTEGER NOT NULL, delay_seconds INTEGER NOT NULL, max_seconds INTEGER NOT NULL, blocker TEXT)');
+    if (!db.prepare('PRAGMA table_info(queue_wakes)').all().some(c => c.name === 'blocker')) transaction(db,()=> {
+      db.exec('ALTER TABLE queue_wakes ADD COLUMN blocker TEXT');
+      const hasClosures=!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_transitions'").get();
+      for(const row of db.prepare('SELECT item_id FROM queue_wakes').all()) {
+        const id=String(row.item_id),item=this.get(id);
+        const pause=db.prepare('SELECT payload FROM queue_pauses WHERE item_id=?').get(id);
+        const blocker=item.blockedOn==='application:paused' && pause ? JSON.parse(String(pause.payload)).blockedOn : item.blockedOn;
+        const closure=hasClosures ? db.prepare('SELECT payload FROM workflow_transitions WHERE item_id=? ORDER BY seq DESC LIMIT 1').get(id) : undefined;
+        const result=closure ? JSON.parse(String(closure.payload)).result : undefined;
+        if(result?.kind==='blocked' && result.blockedOn===blocker && result.wakeAfterSeconds && /^(external|queue):/.test(blocker ?? '')) {
+          db.prepare('UPDATE queue_wakes SET blocker=? WHERE item_id=?').run(blocker,id);
+        } else {
+          db.prepare('DELETE FROM queue_wakes WHERE item_id=?').run(id);
+          this.note(id,'migration','旧等待定时器缺少匹配的阻塞回执，已撤销；条件未满足时保留阻塞，可显式重试重新检查。');
+        }
+      }
+    });
   }
 
   get(id: string): QueueItem {
@@ -113,6 +130,7 @@ export class ExecutionQueue {
           this.change(item, 'handed-off', item.destination, required(result.reason, 'handoff reason'));
         }
       } else if (result.kind === 'question') {
+        this.db.prepare('DELETE FROM queue_wakes WHERE item_id=?').run(id);
         this.change(item, 'blocked', item.destination, required(result.question, 'question'), 'human:user');
       } else if (result.kind === 'completed') {
         const evidence = required(result.evidenceRef, 'evidenceRef');
@@ -130,11 +148,11 @@ export class ExecutionQueue {
         if (result.wakeMaxSeconds !== undefined && (!Number.isInteger(result.wakeMaxSeconds) || result.wakeMaxSeconds < (result.wakeAfterSeconds ?? Infinity) || result.wakeMaxSeconds > 604800)) throw new Error('Invalid wake maximum');
         this.change(item, 'blocked', item.destination, required(result.reason, 'reason'), required(result.blockedOn, 'blockedOn'));
         if (result.wakeAfterSeconds !== undefined) {
-          const old = this.db.prepare('SELECT delay_seconds FROM queue_wakes WHERE item_id=?').get(id);
+          const old = this.db.prepare('SELECT delay_seconds FROM queue_wakes WHERE item_id=? AND blocker=?').get(id, result.blockedOn);
           const max = result.wakeMaxSeconds ?? result.wakeAfterSeconds;
           const delay = Math.min(max, Math.max(result.wakeAfterSeconds, Number(old?.delay_seconds ?? 0) * 2));
-          this.db.prepare('INSERT OR REPLACE INTO queue_wakes VALUES (?,?,?,?)').run(id, Date.now() + delay * 1000, delay, max);
-        }
+          this.db.prepare('INSERT OR REPLACE INTO queue_wakes (item_id,due_at,delay_seconds,max_seconds,blocker) VALUES (?,?,?,?,?)').run(id, Date.now() + delay * 1000, delay, max, result.blockedOn);
+        } else this.db.prepare('DELETE FROM queue_wakes WHERE item_id=?').run(id);
       } else {
         this.change(item, result.kind === 'canceled' ? 'canceled' : 'failed', item.destination, required(result.reason, 'reason'));
       }
@@ -228,7 +246,9 @@ export class ExecutionQueue {
       for (const item of this.list()) {
         if (item.state !== 'blocked' || item.cancelRequested || item.blockedOn === 'runtime:unknown' || item.blockedOn === 'application:paused') continue;
         const blocker = item.blockedOn?.startsWith('queue:') ? this.get(item.blockedOn.slice(6)) : undefined;
-        const wake = this.db.prepare('SELECT due_at FROM queue_wakes WHERE item_id=?').get(item.id);
+        // A receipt belongs to its original park, never to a later question or permission gate.
+        if (!/^(external|queue):/.test(item.blockedOn ?? '')) continue;
+        const wake = this.db.prepare('SELECT due_at FROM queue_wakes WHERE item_id=? AND blocker=?').get(item.id, item.blockedOn);
         if (blocker && !activeStates.includes(blocker.state) || wake && Number(wake.due_at) <= now) {
           this.db.prepare('UPDATE execution_queue SET generation=NULL WHERE id=?').run(item.id);
           this.change(item, 'pending', 'scheduler', blocker ? `依赖 ${blocker.id} 已结束：${blocker.state}。重新核对结果。` : '等待期限到达，重新核对条件。');

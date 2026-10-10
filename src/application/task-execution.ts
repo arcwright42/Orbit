@@ -74,7 +74,7 @@ export class TaskExecutionService {
     this.queue.recoverInterrupted();
     for (const row of this.db.prepare('SELECT task_id FROM task_flows').all()) {
       const flow = this.flow(String(row.task_id))!;
-      if (flow.closed || this.tasks.get(flow.taskId).status === 'review') continue;
+      if (flow.closed || this.reviewable(flow)) continue;
       flow.paused = true; this.save(flow);
       for (const item of this.queue.list().filter(i => i.taskId === flow.taskId)) this.queue.pauseStopped(item.id);
       this.tasks.update(flow.taskId, { status: 'blocked', executionSummary: '恢复了任务记录，等待用户继续' });
@@ -111,7 +111,7 @@ export class TaskExecutionService {
             const evidence = this.evidence(result.evidenceRef);
             validateMarkdownAddressability(evidence.recap || evidence.summary);
             if (step?.review && !['pass','changes_requested'].includes(evidence.verdict ?? '')) throw new Error('审核缺少结构化结论');
-          } catch (error) { return { kind: 'failed', reason: `成果核验失败：${error instanceof Error ? error.message : 'invalid evidence'}` }; }
+          } catch (error) { return { kind: 'failed', reason: `执行回执被拒绝：核验失败，${error instanceof Error ? error.message : 'invalid evidence'}` }; }
         }
         return result;
       } });
@@ -166,6 +166,26 @@ export class TaskExecutionService {
     this.focus(flow); if (!this.flow(flow.taskId)?.closed) this.save(flow);
   }
   private focus(flow: Flow) { const entry = Object.entries(flow.runs).find(([,r]) => r.state === 'active' || r.state === 'ready'); if (entry) { flow.phase = entry[0]; flow.itemId = entry[1].itemId; } }
+  private reviewable(flow: Flow): boolean {
+    return !flow.fault && !flow.paused && Object.values(flow.runs).some(r => r.state === 'done') &&
+      !Object.values(flow.runs).some(r => r.state === 'active' || r.state === 'ready') &&
+      !Object.values(flow.exceptions ?? {}).some(e => e.status !== 'resolved') &&
+      !this.queue.list().some(i => i.taskId === flow.taskId && ['pending','in-progress','blocked'].includes(i.state));
+  }
+  private reconcileExceptions(flow: Flow) {
+    if (flow.paused) return;
+    for (const record of Object.values(flow.exceptions ?? {})) {
+      if (record.status === 'resolved') continue;
+      const source = this.queue.get(record.sourceId);
+      if (!source.successorId && !['done','handed-off','canceled','denied'].includes(source.state) &&
+          !(source.state === 'in-progress' && source.generation !== record.sourceGeneration)) continue;
+      record.status = 'resolved'; record.rotationRequested = false;
+      if (record.humanItemId && this.queue.get(record.humanItemId).blockedOn === 'human:exception') {
+        this.queue.resolveHuman(record.humanItemId, '原执行已推进或结束，旧异常关闭');
+      }
+    }
+    this.save(flow);
+  }
   private ensureItem(flow: Flow) {
     const step = flow.spec.steps.find(s => s.id === flow.phase)!, run = flow.runs[step.id];
     const task = this.tasks.get(flow.taskId), seat = this.teams.taskSeats(flow.teamId, flow.taskId).find(s => s.role === (step.gate?.target && step.gate.target !== 'human:user' ? step.gate.target : step.actor_role))!;
@@ -202,11 +222,12 @@ export class TaskExecutionService {
         catch(error) { const latest=this.flow(flow.taskId)!; const record=Object.values(latest.exceptions ?? {}).find(r => r.sourceId===e.sourceId && r.sourceGeneration===e.sourceGeneration)!; record.rotationRequested=false; transaction(this.db,()=>{ this.escalateHuman(latest,record,`接替准备失败：${String(error)}`); this.save(latest); }); }
       }
     }
+    for (const row of this.db.prepare('SELECT task_id FROM task_flows').all()) transaction(this.db, () => this.reconcileExceptions(this.flow(String(row.task_id))!));
     for(const row of this.db.prepare('SELECT task_id FROM task_flows').all()) for(const record of Object.values(this.flow(String(row.task_id))!.exceptions ?? {})) if(record.status==='resolved' && record.itemId && ['pending','in-progress','blocked'].includes(this.queue.get(record.itemId).state)) await this.scheduler.cancel(record.itemId,'workflow:exception-resolved');
     this.flushKnowledge();
     if (this.queue.wakeDue()) this.scheduler.tick();
     for (const row of this.db.prepare('SELECT task_id FROM task_flows').all()) {
-      const flow = this.flow(String(row.task_id))!; if (flow.fault) { for (const item of this.queue.list().filter(i => i.taskId === flow.taskId && ['pending','in-progress'].includes(i.state))) await this.scheduler.cancel(item.id, 'workflow:fault'); this.tasks.update(flow.taskId, { status: 'failed', executionSummary: flow.fault }); continue; } if (flow.closed || flow.paused || this.tasks.get(flow.taskId).status === 'review') continue;
+      const flow = this.flow(String(row.task_id))!; if (flow.closed || flow.paused) continue; if (flow.fault) { for (const item of this.queue.list().filter(i => i.taskId === flow.taskId && ['pending','in-progress'].includes(i.state))) await this.scheduler.cancel(item.id, 'workflow:fault'); this.tasks.update(flow.taskId, { status: 'failed', executionSummary: flow.fault }); continue; }
       try {
         transaction(this.db, () => {
           for (const [stepId, run] of Object.entries(flow.runs)) if (run.state === 'active') {
@@ -292,7 +313,7 @@ export class TaskExecutionService {
       this.advance(flow, step.id, evidence.verdict === 'changes_requested' ? 'failed' : 'done');
     } else if (result.kind === 'failed') {
       if (rejected) { this.recovery.record(step.id,item); this.routeException(flow,step.id,item,'unmapped_failed',true); }
-      else if (!step.review && step.next_hop?.on?.failed) { run.summary = result.reason; this.advance(flow, step.id, 'failed'); }
+      else if (step.next_hop?.on?.failed) { run.summary = result.reason; this.advance(flow, step.id, 'failed'); }
       else this.routeException(flow, step.id, item, 'unmapped_failed');
     }
     if (result.kind === 'blocked' && item.blockedOn !== 'runtime:unknown' && /^(runtime|context|auth):/.test(item.blockedOn ?? '')) this.routeException(flow, step.id, item, 'unmapped_failed');
@@ -421,12 +442,12 @@ export class TaskExecutionService {
     const unresolved = this.queue.list().some(i => i.taskId === taskId && ['in-progress','blocked'].includes(i.state));
     this.tasks.update(taskId, { status: unresolved ? 'blocked' : 'canceled' }); this.changed();
   }); }
-  accept(taskId: string) { const flow = this.requireFlow(taskId); if (this.tasks.get(taskId).status !== 'review' || flow.fault) throw new Error('任务尚未到达验收阶段。'); flow.closed = true; this.save(flow); this.tasks.update(taskId, { status: 'completed' }); this.changed(); }
+  accept(taskId: string) { transaction(this.db, () => { const flow = this.requireFlow(taskId); if (!this.reviewable(flow)) throw new Error('任务尚未到达验收阶段。'); flow.closed = true; this.save(flow); }); this.tasks.update(taskId, { status: 'completed' }); this.changed(); }
   revise(taskId: string, feedback: string) { return this.serial(taskId, async () => {
-    const flow = this.requireFlow(taskId); if (this.tasks.get(taskId).status !== 'review' || typeof feedback !== 'string' || !feedback.trim() || feedback.length > 16000) throw new Error('请在待验收任务中填写修改要求。');
+    const flow = this.requireFlow(taskId); if (!this.reviewable(flow) || typeof feedback !== 'string' || !feedback.trim() || feedback.length > 16000) throw new Error('请在待验收任务中填写修改要求。');
     flow.cycle = randomUUID(); flow.hops = 0; flow.feedback += `\n用户修改要求：${feedback}`;
     for (const step of flow.spec.steps) flow.runs[step.id] = { state: step.id === flow.spec.entry || step.depends_on?.length === 0 ? 'ready' : 'dormant', itemId: '', visit: 0 };
-    transaction(this.db, () => { this.save(flow); this.prepareReady(flow); }); this.scheduler.tick(); this.changed();
+    transaction(this.db, () => { this.save(flow); this.prepareReady(flow); }); this.tasks.update(taskId, { status: 'running', executionSummary: '正在根据修改要求重新执行' }); this.scheduler.tick(); this.changed();
   }); }
   reconcileStopped(taskId: string, itemId?: string) {
     const flow = this.flow(taskId); if (!flow) throw new Error('没有中断的执行');
