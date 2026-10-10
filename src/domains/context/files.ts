@@ -55,8 +55,7 @@ export function readSource(root: string, path: string, ref: string, source: Sour
 }
 
 /** OpenRig address compatibility: ASCII slugging, H2/H3 full spans, fenced code ignored. */
-export function readSection(text: string, headings: string[]): string {
-  if (!headings.length) return text;
+function sections(text: string) {
   const lines = text.split('\n'), headers: Array<{ level: number; line: number; path: string[] }> = [];
   let parent: string | null = null, fence: { marker: string; length: number } | null = null;
   for (let index = 0; index < lines.length; index++) {
@@ -76,6 +75,21 @@ export function readSection(text: string, headings: string[]): string {
     if (level === 2) parent = slug;
     headers.push({ level, line: index, path: level === 3 && parent !== null ? [parent, slug] : [slug] });
   }
+  return { lines, headers, fence };
+}
+export function validateMarkdownAddressability(text: string): void {
+  const { headers, fence } = sections(text);
+  if (fence) throw new ContextError('address','Unterminated markdown fence');
+  const paths = new Set<string>();
+  for (const header of headers.filter(h => [2,3].includes(h.level))) { const path = header.path.join('/'); if (paths.has(path)) throw new ContextError('address', `Duplicate markdown address: ${path}`); paths.add(path); }
+}
+export function recapAdvisories(text: string): string[] {
+  const notes: string[] = []; if (!sections(text).headers.some(h => h.path.some(p => p.includes('decision'))) && !/^#{1,6} .*决策/m.test(text)) notes.push('no-decisions-section');
+  text.split('\n').forEach((line,i) => { if (/unverified/i.test(line) && !line.includes('UNVERIFIED:')) notes.push(`nonstandard-unverified-marker:${i+1}`); }); return notes;
+}
+export function readSection(text: string, headings: string[]): string {
+  if (!headings.length) return text;
+  const {lines,headers} = sections(text);
   const matches = headers.filter(header => [2, 3].includes(header.level) && header.path.join('/') === headings.join('/'));
   if (matches.length !== 1) throw new ContextError('address', `Section ${headings.join('/')} is ${matches.length ? 'ambiguous' : 'missing'}.`);
   const start = matches[0], end = headers.find(header => header.line > start.line && header.level <= start.level)?.line ?? lines.length;

@@ -1,10 +1,11 @@
+import { runtimeContext } from '../application/runtime-context';
 import { platformTools } from '../application/platform-tools';
 import { contextPolicy, estimateTokens, historyContext } from '../domains/conversation/context-budget';
 import { foregroundPrompt, foregroundTools } from '../domains/conversation/tools';
 import { TextModelStore } from '../domains/models/settings';
 import { TextAgent } from '../domains/conversation/text-agent';
 import type { TextModelInput, ChatEvent } from '../contracts';
-import { importContextPack, loadContextPack, assembleContextPack, composeContextPack } from '../domains/context';
+import { importContextPack } from '../domains/context';
 import { TaskExecutionService } from '../application/task-execution';
 import { loadEnvFile } from 'node:process';
 import { randomUUID } from 'node:crypto';
@@ -39,15 +40,7 @@ app.whenReady().then(() => {
   const materials = new MaterialLibrary(db, join(dataDir, 'attachments'));
   const workspace = new WorkspaceService(db, materials);
   let reportUpdates = () => {};
-  const execution = new TaskExecutionService(db, materials, dataDir, () => { if (window && !window.isDestroyed()) window.webContents.send('workspace:changed'); reportUpdates(); }, async (seat, item, directory) => {
-    if (!directory) return '';
-    const pack = loadContextPack(directory);
-    if (!pack.manifest.atoms.length) return assembleContextPack(pack).text;
-    const composition = composeContextPack(pack, { situation: seat.nativeId ? 'handover' : item.source === 'foreground' ? 'fresh' : 'handover', runtime: 'codex', budgetTokens: 16000,
-      roots: { project: seat.workspace, mission: join(seat.workspace, '.orbit', item.taskId), seat: execution.teams.seatRoot(seat) } });
-    if (composition.budget) throw new Error(`上下文包超出预算 ${composition.budget.overageTokens} tokens，请调整包后重试。`);
-    return composition.pieces.map(piece => `[${piece.source}:${piece.address}; ${piece.taxonomy}]\n${piece.text}`).join('\n\n');
-  });
+  const execution = new TaskExecutionService(db, materials, dataDir, () => { if (window && !window.isDestroyed()) window.webContents.send('workspace:changed'); reportUpdates(); }, async (seat, item, directory, situation) => runtimeContext(seat,item,directory,execution.teams.seatRoot(seat),situation));
   const string = (value: unknown) => { if (typeof value !== 'string' || value.length > 16000) throw new Error('Invalid argument'); return value; };
   const handle = (channel: string, action: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
@@ -114,7 +107,7 @@ app.whenReady().then(() => {
     if (choice.canceled) return;
     const root = join(dataDir, 'context-packs'); mkdirSync(root, { recursive: true });
     const pack = importContextPack(choice.filePaths[0], join(root, randomUUID()));
-    execution.teams.contextPack(team.id, pack.directory);
+    execution.setContextPack(team.id, pack.directory);
     window?.webContents.send('workspace:changed');
   });
   handle('templates:list', () => execution.templates.list());
@@ -123,7 +116,7 @@ app.whenReady().then(() => {
   handle('teams:create', (name, config, templateId) => execution.createTeam(string(name), config, templateId === undefined ? undefined : string(templateId)));
   handle('workspace:pick-directory', async () => { const choice = await dialog.showOpenDialog(window!, { title: '选择已有项目目录', properties: ['openDirectory'] }); return choice.canceled ? undefined : choice.filePaths[0]; });
   handle('execution:approve', (taskId, answer, itemId) => { execution.approve(string(taskId), string(answer), itemId === undefined ? undefined : string(itemId)); return workspace.snapshot(); });
-  handle('execution:rotate', (taskId, itemId) => { execution.rotateSession(string(taskId), itemId === undefined ? undefined : string(itemId)); return workspace.snapshot(); });
+  handle('execution:rotate', async (taskId, itemId) => { await execution.rotateSession(string(taskId), itemId === undefined ? undefined : string(itemId)); return workspace.snapshot(); });
   handle('execution:dispatch', async (taskId, teamId, directory) => { await execution.dispatch(string(taskId), string(teamId), directory === undefined ? undefined : string(directory)); return workspace.snapshot(); });
   handle('execution:detail', taskId => execution.detail(string(taskId)));
   handle('execution:answer', (taskId, answer) => { execution.answer(string(taskId), string(answer)); return workspace.snapshot(); });

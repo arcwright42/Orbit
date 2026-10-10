@@ -43,8 +43,8 @@ try {
   await page.getByLabel('新团队名称').fill('并行调研测试');
   await page.getByLabel('团队模板').selectOption('parallel-research');
   await page.getByRole('button', { name: '创建团队', exact: true }).click();
-  await page.getByText('资料调研 · 方案分析 · 汇总', { exact: true }).waitFor();
-  assert.equal((await page.evaluate(() => window.orbit.localTeams()))[0].seats.length, 3);
+  await page.getByText('资料调研 · 方案分析 · 汇总 · 协调者', { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.orbit.localTeams()))[0].seats.length, 4);
   await page.screenshot({ path: 'artifacts/orbit-team-templates.png' });
   await page.getByRole('button', { name: '设置', exact: true }).first().click();
   await page.getByLabel('服务地址').fill('http://127.0.0.1:1');

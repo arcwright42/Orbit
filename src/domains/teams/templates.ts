@@ -18,6 +18,12 @@ const builtins: TeamTemplate[] = [
     ] },
   } },
 ];
+// Newly created teams include an exception coordinator; persisted team snapshots are unchanged.
+for (const template of builtins) {
+  template.revision = 2; template.config = structuredClone(template.config);
+  template.config.members.push({role:'coordinator',name:'协调者',instructions:'仅诊断异常与提出有证据的恢复建议，不代替执行者制作，不代替用户审批。'});
+  template.config.workflow.exception_routing = {orchestrator_role:'coordinator',default:'orchestrator'};
+}
 export class TeamTemplates {
   constructor(private db: DatabaseSync) { db.exec('CREATE TABLE IF NOT EXISTS team_templates (id TEXT PRIMARY KEY, payload TEXT NOT NULL)'); }
   list(query = '') { if (typeof query !== 'string' || query.length > 200) throw new Error('Invalid template query'); return [...builtins, ...this.db.prepare('SELECT payload FROM team_templates ORDER BY id').all().map(row => JSON.parse(String(row.payload)) as TeamTemplate)]

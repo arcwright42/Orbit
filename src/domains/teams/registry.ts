@@ -5,7 +5,7 @@ import { mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { defaultTeamConfig, validateTeamConfig, type TeamConfig } from '../workflows/spec';
 import { transaction } from '../../infrastructure/database';
-export interface Seat { id: string; teamId: string; role: string; name: string; sessionId: string; nativeId: string | null; runtime: 'codex'; generation: string; workspace: string; instructions: string; model?: string }
+export interface Seat { id: string; teamId: string; role: string; name: string; sessionId: string; nativeId: string | null; runtime: 'codex'; generation: string; workspace: string; instructions: string; model?: string; context_atoms?: Partial<Record<'project' | 'mission' | 'seat' | 'slice', string[]>>; context_profiles?: Partial<Record<import('../context/types').Situation,string>> }
 export interface LocalTeam { id: string; name: string; workspace: string; seats: Seat[]; contextPack?: string; config: TeamConfig }
 /** Session, node and native runtime identity are separate persisted facts. */
 export class TeamRegistry {
@@ -14,6 +14,7 @@ export class TeamRegistry {
       CREATE TABLE IF NOT EXISTS orbit_seats (id TEXT PRIMARY KEY,team_id TEXT NOT NULL REFERENCES orbit_teams(id),role TEXT NOT NULL,name TEXT NOT NULL,session_id TEXT NOT NULL UNIQUE,native_id TEXT,runtime TEXT NOT NULL,generation TEXT NOT NULL,workspace TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS orbit_task_sessions (session_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,seat_id TEXT NOT NULL REFERENCES orbit_seats(id),native_id TEXT,generation TEXT NOT NULL,workspace TEXT NOT NULL,UNIQUE(task_id,seat_id));
       CREATE TABLE IF NOT EXISTS orbit_edges (source_id TEXT NOT NULL REFERENCES orbit_seats(id),target_id TEXT NOT NULL REFERENCES orbit_seats(id),kind TEXT NOT NULL,PRIMARY KEY(source_id,target_id,kind));`);
+    this.db.exec('CREATE TABLE IF NOT EXISTS session_preparations (session_id TEXT PRIMARY KEY, prior_generation TEXT NOT NULL, status TEXT NOT NULL, native_id TEXT, reason TEXT)');
     this.db.exec('CREATE TABLE IF NOT EXISTS seat_session_lineage (session_id TEXT NOT NULL,generation TEXT NOT NULL,native_id TEXT,created_at TEXT NOT NULL,PRIMARY KEY(session_id,generation))');
     this.db.exec('CREATE TABLE IF NOT EXISTS team_create_requests (request_id TEXT PRIMARY KEY, payload TEXT NOT NULL, team_id TEXT NOT NULL)');
     this.db.exec('CREATE TABLE IF NOT EXISTS orbit_team_configs (team_id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
@@ -63,7 +64,21 @@ export class TeamRegistry {
   config(teamId: string): TeamConfig { const row = this.db.prepare('SELECT payload FROM orbit_team_configs WHERE team_id=?').get(teamId); return row ? JSON.parse(String(row.payload)) : structuredClone(defaultTeamConfig); }
   seatRoot(seat: Seat) { return join(this.require(seat.teamId).workspace, 'knowledge', seat.id); }
   targets(seat: Seat, taskId: string): Seat[] { const allowed = new Set(this.config(seat.teamId).edges.filter(e => e.from === seat.role).map(e => e.to)); return this.taskSeats(seat.teamId, taskId).filter(s => allowed.has(s.role)); }
-  rotate(sessionId: string) { return transaction(this.db, () => { const seat = this.seat(sessionId); this.db.prepare('INSERT OR IGNORE INTO seat_session_lineage VALUES (?,?,?,?)').run(seat.sessionId, seat.generation, seat.nativeId, new Date().toISOString()); this.db.prepare('UPDATE orbit_task_sessions SET native_id=NULL,generation=? WHERE session_id=?').run(randomUUID(), seat.sessionId); }); }
+  preparing(sessionId: string) { return this.db.prepare("SELECT 1 FROM session_preparations p JOIN orbit_task_sessions t ON t.session_id=p.session_id WHERE t.seat_id=(SELECT seat_id FROM orbit_task_sessions WHERE session_id=?) AND p.status='preparing'").get(sessionId) !== undefined; }
+  beginSuccessor(sessionId: string) {
+    const seat=this.seat(sessionId); if(this.preparing(sessionId)) throw new Error('接替正在准备');
+    this.db.prepare("INSERT OR REPLACE INTO session_preparations VALUES (?,?,'preparing',NULL,NULL)").run(sessionId,seat.generation); return seat;
+  }
+  commitSuccessor(sessionId: string, priorGeneration: string, nativeId: string) {
+    const seat=this.seat(sessionId), preparation=this.db.prepare('SELECT * FROM session_preparations WHERE session_id=?').get(sessionId);
+    if (seat.generation !== priorGeneration || preparation?.status !== 'preparing' || preparation.prior_generation !== priorGeneration || !/^[a-zA-Z0-9_-]{8,100}$/.test(nativeId) || nativeId === seat.nativeId) throw new Error('接替就绪证明或代际不匹配');
+    this.db.prepare('INSERT OR IGNORE INTO seat_session_lineage VALUES (?,?,?,?)').run(sessionId,seat.generation,seat.nativeId,new Date().toISOString());
+    this.db.prepare('UPDATE orbit_task_sessions SET native_id=?,generation=? WHERE session_id=? AND generation=?').run(nativeId,randomUUID(),sessionId,priorGeneration);
+    this.db.prepare("UPDATE session_preparations SET status='committed',native_id=? WHERE session_id=?").run(nativeId,sessionId);
+  }
+  abandonSuccessor(sessionId: string, reason: string) { this.db.prepare("UPDATE session_preparations SET status='abandoned',reason=? WHERE session_id=? AND status='preparing'").run(reason,sessionId); }
+  recoverPreparations() { this.db.prepare("UPDATE session_preparations SET status='abandoned',reason='应用中断，旧绑定保留' WHERE status='preparing'").run(); }
+  configureContext(teamId:string,role:string,profiles:Seat['context_profiles'],atoms:Seat['context_atoms']) { const config=this.config(teamId),member=config.members.find(m=>m.role===role); if(!member) throw new Error('Unknown role'); member.context_profiles=profiles; member.context_atoms=atoms; this.db.prepare('UPDATE orbit_team_configs SET payload=? WHERE team_id=?').run(JSON.stringify(validateTeamConfig(config)),teamId); }
   contextPack(teamId: string, directory: string) { this.require(teamId); this.db.prepare('UPDATE orbit_teams SET context_pack=? WHERE id=?').run(directory, teamId); }
 }
 function decode(row: Record<string, unknown>): Seat { return { instructions: '', id: String(row.id), teamId: String(row.team_id), role: row.role as Seat['role'], name: String(row.name), sessionId: String(row.session_id), nativeId: row.native_id ? String(row.native_id) : null, runtime: 'codex', generation: String(row.generation), workspace: String(row.workspace) }; }

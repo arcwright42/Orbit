@@ -34,7 +34,7 @@
 | accept_task | taskId | 用户明确验收后才完成任务；后台 completed 不代表用户接受 |
 | cancel_task | taskId | 用户明确要求取消；覆盖全部分支；确认进程退出后才结束 |
 
-并行执行时先用 get_task_execution 获取 itemId，再对特定步骤操作。省略时选择首个待处理步骤。后台成员按声明的团队连线交接当前义务；前台不直接操作底层队列表或进程。
+并行执行时先用 get_task_execution 获取 itemId，再对特定步骤操作。省略时选择首个待处理步骤。后台成员按声明的团队连线交接；显式工作流路由创建目标步骤，未映射委托保留当前义务；前台不直接操作底层队列表或进程。
 
 ## 默认调用顺序
 
@@ -48,9 +48,9 @@
 
 ## 配置语言
 
-配置使用 members、edges、workflow（entry、steps、max_hops）。步骤支持 actor_role、objective、depends_on、review、allowed_exits、next_hop.on.done/failed、human:user gate。仅 Codex；未知配置字段拒绝处理。
+配置使用 members、edges、workflow（entry、steps、max_hops）。步骤支持 actor_role、objective、depends_on、review、allowed_exits、next_hop.on 的四种结果、require/forbid/suggested_roles、等待默认值、人工/角色 gate 与结构化 acceptance。仅 Codex；未知配置字段拒绝处理。
 
-这是 Orbit 的有界工作流配置，不宣称可直接导入任意 OpenRig rigspec。handoff 转移当前义务、waiting 停放当前义务；这两个结果目前不能用 next_hop 映射成新步骤。完整上游异常策略、运行时拓扑修改、任意上游模板转换仍需独立实现，不能靠工具名称宣称已支持。
+这是 Orbit 的有界工作流配置，不宣称可直接导入任意 OpenRig rigspec。四种结果均可显式映射；未映射 waiting 停放，未映射委托不得绕过审核隔离。运行时拓扑修改、任意上游模板转换仍属于待定产品范围。
 
 
 ## 后台 Codex 工具
@@ -59,7 +59,8 @@
 
 | 工具 | 范围与行为 |
 | --- | --- |
-| list_work / get_work | 当前任务的执行义务与状态 |
+| list_work / get_work | 当前任务的执行义务、状态及最近事件 |
+| read_context | 读取当前情境的 profile、席位记录及团队经验，供压缩后恢复 |
 | get_team | 本团队角色和经过审核隔离过滤的交接目标 |
 | search_team_memory / read_team_memory | 本团队经验及来源 |
 | report_progress | 写入当前义务的进度事件 |
@@ -69,3 +70,12 @@
 结束类工具只准备意图；原生进程正常退出、成果核验通过后才提交。重复 requestId 幂等，冲突意图拒绝；凭证在进程结束时撤销。业务接口校验任务、团队、执行代次及取消状态。为了访问本机接口，Codex workspace-write 启用 network_access；这不是只允许回环网络的防火墙配置。
 
 工作流可配置 `exception_routing: { orchestrator_role: "coordinator", default: "orchestrator", classes: { stuck_overdue: "human_only" } }`。协调者必须是声明的团队成员。缺省/类级路由支持 orchestrator、human_only；未声明协调者则留给用户处理。人工审批和认证阻塞不能交给模型代批。诊断完成不代表任务完成，只有已停止的执行才能 retry/rotate。
+
+
+## 上下文选择与恢复入口
+
+get_team 同时返回 contextCatalog.profiles/atoms。导入上下文包后，configure_team_context({teamId,role,profiles:{fresh,handover,"post-compaction"},contextAtoms:{project,mission,seat,slice}}) 选择目录中的 profile/atom ID。团队有未结束任务时拒绝配置或更换包，避免静默修改运行上下文。
+
+answer_task 对普通问题保持回答并继续；对 human:exception 仅记录处理意见。明确恢复时再 retry_task（新 packet 续跑），或 rotate_task_session（先验证新会话再提交接替）。桌面提供同样的记录意见、重试、接替按钮。新建内置模板 revision 2 默认包含协调者；旧实例配置不被模板升级覆盖。
+
+complete_work/handoff_work 可携带 acceptance:{candidate,verdict,evidence_ref}，必须满足步骤契约。后台完成仍需原生进程退出和真实成果核验。get_work 提供 watchdog 等事件；read_context 复用原生压缩事实，不实现另一个压缩器。

@@ -27,7 +27,7 @@ try {
   assert.equal(workspace.snapshot().tasks[0].status, 'review');
   const detail = service.detail(task.id)!;
   assert.equal(await readFile(detail.artifacts.find(p => p.endsWith('/hello.txt'))!, 'utf8'), 'ORBIT_TEAM_OK');
-  assert.ok(service.teams.taskSeats(team.id, task.id).every(s => s.nativeId));
+  assert.ok(service.teams.taskSeats(team.id, task.id).filter(s => s.role !== 'coordinator').every(s => s.nativeId));
   assert.ok(service.queue.list().every(item => service.queue.events(0,1000).some(e => e.itemId === item.id && e.note === 'ORBIT_BACKEND_TOOL_OK')));
   assert.equal(service.memory.list({ kind: 'team', id: team.id }).length, 2);
   service.accept(task.id); assert.equal(workspace.snapshot().tasks[0].status, 'completed');

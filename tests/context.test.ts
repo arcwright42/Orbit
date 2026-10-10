@@ -162,3 +162,13 @@ test('file-only packs assemble exact bytes in declared order and do not silently
     assert.throws(() => assembleContextPack(pack), /absent/);
   } finally { f.close(); }
 });
+
+test('application context delivery uses configured post-compaction profile and explicit source selections', async()=>{
+  const {runtimeContext}=await import('../src/application/runtime-context');
+  const f=fixture(manifest([atom('compact',{situations:['post-compaction']})],{profiles:[{id:'after-compact',situations:['post-compaction'],runtimes:['codex'],phases:[{id:'restore',atoms:['compact']}]}]}));
+  try{
+    const seat={workspace:f.directory,context_profiles:{'post-compaction':'after-compact'}} as import('../src/domains/teams/registry').Seat;
+    const result=runtimeContext(seat,{taskId:'task'} as import('../src/domains/orchestration/types').QueueItem,f.pack,f.directory,'post-compaction');assert.match(result,/after-compact/);assert.match(result,/Hello world/);
+    seat.context_profiles={'post-compaction':'missing'};assert.throws(()=>runtimeContext(seat,{taskId:'task'} as import('../src/domains/orchestration/types').QueueItem,f.pack,f.directory,'post-compaction'),/Profile/);
+  }finally{f.close();}
+});
