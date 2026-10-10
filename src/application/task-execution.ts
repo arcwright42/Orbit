@@ -26,11 +26,11 @@ import type { MaterialLibrary } from '../domains/materials/library';
 import type { TaskExecution } from '../contracts';
 import { MemoryStore } from '../domains/memory/store';
 import { TeamKnowledge } from '../domains/memory/team-knowledge';
-import { nextStep, successors, type WorkflowSpec, type WorkflowExit } from '../domains/workflows/spec';
+import { nextStep, type WorkflowSpec, type WorkflowExit, type WorkflowStep } from '../domains/workflows/spec';
 
-interface StepRun { state: 'dormant' | 'ready' | 'active' | 'done' | 'routed'; itemId: string; visit: number; driveHops?: number; resumeCount?: number; summary?: string }
+interface StepRun { stepId?: string; state: 'dormant' | 'ready' | 'active' | 'done' | 'routed'; itemId: string; visit: number; driveHops?: number; resumeCount?: number; summary?: string }
 interface ExceptionRun { sourceId: string; sourceGeneration: string | null; stepId: string; itemId?: string; kind: ExceptionClass; status: 'open' | 'resolved' | 'human'; humanItemId?: string; rotationRequested?: boolean; occurrence?: string }
-interface Flow { taskId: string; teamId: string; cycle: string; phase: string; itemId: string; feedback: string; artifacts: string[]; summary: string; closed: boolean; spec: WorkflowSpec; runs: Record<string, StepRun>; hops: number; authors?: string[]; exceptions?: Record<string, ExceptionRun>; fault?: string; paused?: boolean }
+interface Flow { taskId: string; teamId: string; cycle: string; phase: string; itemId: string; feedback: string; artifacts: string[]; summary: string; closed: boolean; closure?: 'accepted' | 'canceled'; spec: WorkflowSpec; runs: Record<string, StepRun>; completions?: Record<string, number>; completionClock?: number; hops: number; authors?: string[]; exceptions?: Record<string, ExceptionRun>; fault?: string; paused?: boolean }
 export class TaskExecutionService {
   private db: DatabaseSync;
   readonly queue: ExecutionQueue;
@@ -54,6 +54,7 @@ export class TaskExecutionService {
     private portFactory?: (seat: Seat) => ExecutionPort) {
     this.db = openCoreDatabase(join(root, 'execution-core.sqlite')); this.tasks = new TaskRepository(db);
     this.db.exec('CREATE TABLE IF NOT EXISTS task_flows (task_id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_transitions (seq INTEGER PRIMARY KEY AUTOINCREMENT,item_id TEXT NOT NULL,generation TEXT NOT NULL,task_id TEXT NOT NULL,step_id TEXT NOT NULL,exit TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(item_id,generation))');
+    this.db.exec('CREATE TABLE IF NOT EXISTS execution_commands (request_id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL, source_id TEXT, source_generation TEXT, result TEXT)');
     this.watchdog = new Watchdog(this.db);
     this.recovery = new WorkflowRecovery(this.db);
     this.queue = new ExecutionQueue(this.db); this.teams = new TeamRegistry(this.db, join(root, 'workspaces'));
@@ -65,16 +66,16 @@ export class TaskExecutionService {
     for (const row of this.db.prepare('SELECT task_id FROM task_flows').all()) { const flow = this.flow(String(row.task_id))!; this.register(flow.teamId, flow.taskId); }
     this.queue.setClaimGuard(item => { const flow = this.flow(item.taskId); return !!flow && !flow.closed && !flow.paused && !flow.fault && !this.teams.preparing(item.destination); });
     this.queue.setRoutingPolicy((item,result) => {
-      const flow=this.flow(item.taskId),step=flow?.spec.steps.find(s=>flow.runs[s.id].itemId===item.id); if(!flow || !step) return false;
+      const flow=this.flow(item.taskId),step=flow && this.binding(flow,item.id)?.step; if(!flow || !step) return false;
       if(result.kind==='blocked') return /^(external|queue):/.test(result.blockedOn) && !!nextStep(flow.spec,step,'waiting');
-      if(result.kind==='handoff' && !step.next_hop?.on?.handoff && !step.next_hop?.suggested_roles?.length && flow.spec.steps.find(s=>s.id===nextStep(flow.spec,step,'handoff'))?.review) return false;
-      return result.kind==='handoff' && (!!nextStep(flow.spec,step,'handoff') || flow.spec.steps.some(s=>s.depends_on?.includes(step.id)));
+      return result.kind==='handoff' && this.workflowHandoff(item);
     });
     this.queue.setProjector((item, result) => this.projectResult(item, result));
     this.queue.recoverInterrupted();
     for (const row of this.db.prepare('SELECT task_id FROM task_flows').all()) {
       const flow = this.flow(String(row.task_id))!;
-      if (flow.closed || this.reviewable(flow)) continue;
+      if (flow.closed) { this.projectClosure(flow); continue; }
+      if (this.reviewable(flow)) continue;
       flow.paused = true; this.save(flow);
       for (const item of this.queue.list().filter(i => i.taskId === flow.taskId)) this.queue.pauseStopped(item.id);
       this.tasks.update(flow.taskId, { status: 'blocked', executionSummary: '恢复了任务记录，等待用户继续' });
@@ -95,10 +96,13 @@ export class TaskExecutionService {
   private register(id: string, taskId: string, directory?: string) {
     for (const seat of this.teams.taskSeats(id, taskId, directory)) if (!this.ports.has(seat.sessionId)) {
       const port = this.portFactory?.(seat) ?? new CodexRuntime(this.teams, seat.sessionId, join(this.root, 'evidence'),
-        (item, note) => this.queue.activity(item.id, item.generation!, note), async (seat,item) => this.executionContext(seat,item), undefined, (seat, item) => backendAttempt(this.queue, this.teams, this.memory, seat, item, () => this.handoffTargets(seat, item), () => this.executionContext(this.teams.seat(seat.sessionId),item)));
+        (item, note) => this.queue.activity(item.id, item.generation!, note), async (seat,item) => this.executionContext(seat,item), undefined,
+        (seat, item) => backendAttempt(this.queue, this.teams, this.memory, seat, item, () => this.handoffTargets(seat, item), () => this.executionContext(this.teams.seat(seat.sessionId),item),
+          () => this.workflowHandoff(item), (knowledge,requestId) => { const receipt=this.knowledge.checkpoint(seat,item,knowledge,requestId); this.flushKnowledge(); return {...receipt,projected:this.knowledge.projected(receipt.recordKey)}; }),
+        undefined, item=>this.workflowHandoff(item));
       this.ports.set(seat.sessionId, { prepareSuccessor: port.prepareSuccessor?.bind(port), checkReady:port.checkReady?.bind(port), cancel: item => port.cancel(item), reconcile: item => port.reconcile?.(item) ?? Promise.resolve(undefined), execute: async (item, signal) => {
         this.flushKnowledge();
-        const start = this.flow(item.taskId), step = start?.spec.steps.find(s => start.runs[s.id].itemId === item.id);
+        const start = this.flow(item.taskId), step = start && this.binding(start,item.id)?.step;
         if (start?.closed || signal.aborted) return { kind: 'canceled', reason: '任务已取消' };
         if (start && step) {
           if ((step.review || step.gate && step.gate.target !== 'human:user') && start.authors?.includes(seat.id)) return { kind: 'failed', reason: '该席位参与过实际制作，不能独立审核自己的成果' };
@@ -119,11 +123,12 @@ export class TaskExecutionService {
   }
 
   private async executionContext(seat: Seat, item: QueueItem, override?: Situation) {
+    this.flushKnowledge();
     const situation: Situation = override ?? (!seat.nativeId ? 'fresh' : codexContext(seat.nativeId).compactedAt ? 'post-compaction' : 'handover');
     return [this.knowledge.context(seat,item.body), await this.compose(seat,item,this.teams.require(seat.teamId).contextPack,situation)].filter(Boolean).join('\n\n');
   }
   private handoffTargets(seat: Seat, item: QueueItem) {
-    const flow = this.flow(item.taskId), step = flow?.spec.steps.find(s => flow.runs[s.id].itemId === item.id);
+    const flow = this.flow(item.taskId), step = flow && this.binding(flow,item.id)?.step;
     if (!flow || !step) return [];
     const mapped = step.next_hop?.on?.handoff && flow.spec.steps.find(s=>s.id===step.next_hop!.on!.handoff);
     if(mapped) return this.teams.targets(seat,item.taskId).filter(s=>s.role===(mapped.gate && mapped.gate.target!=='human:user' ? mapped.gate.target : mapped.actor_role));
@@ -131,13 +136,67 @@ export class TaskExecutionService {
     return this.teams.targets(seat, item.taskId).filter(target => !flow.spec.steps.some(s => (s.review && s.actor_role === target.role || s.gate?.target === target.role)));
   }
 
+  private bindings(flow: Flow) {
+    return Object.entries(flow.runs).map(([key,run]) => ({key,run,step:flow.spec.steps.find(s => s.id === (run.stepId ?? key))!}));
+  }
+  private binding(flow: Flow, itemId: string) { return this.bindings(flow).find(b => b.run.itemId === itemId); }
+  private workflowHandoff(item: QueueItem) {
+    const flow=this.flow(item.taskId),step=flow && this.binding(flow,item.id)?.step;
+    if(!flow || !step) return false;
+    // Orbit's independent review contract requires verified completed evidence with a verdict.
+    if(step.review) return false;
+    if(!step.next_hop?.on?.handoff && !step.next_hop?.suggested_roles?.length && flow.spec.steps.find(s=>s.id===nextStep(flow.spec,step,'handoff'))?.review) return false;
+    return !!nextStep(flow.spec,step,'handoff') || flow.spec.steps.some(s=>s.depends_on!==undefined);
+  }
+  private completedSteps(flow: Flow) {
+    return new Set(Object.entries(flow.completions ?? {}).filter(([id,rank]) =>
+      (flow.spec.steps.find(s=>s.id===id)?.depends_on ?? []).every(dep=>(flow.completions?.[dep] ?? 0)<rank)).map(([id])=>id));
+  }
+  private readyBinding(flow: Flow, stepId: string, driveHops: number) {
+    const prior=this.bindings(flow).filter(b=>b.step.id===stepId),unused=prior.find(b=>b.run.state==='dormant');
+    if(unused) { unused.run.state='ready'; unused.run.driveHops=driveHops; return; }
+    // A mapped return may target a step with a live sibling occurrence. Keep both obligations.
+    const visit=Math.max(-1,...prior.map(b=>b.run.visit))+1;
+    flow.runs[`${stepId}:${visit}`]={stepId,state:'ready',itemId:'',visit,driveHops};
+  }
+
   private flow(taskId: string): Flow | undefined {
     const row = this.db.prepare('SELECT payload FROM task_flows WHERE task_id=?').get(taskId); if (!row) return;
     const flow: Flow = JSON.parse(String(row.payload));
     if (!flow.spec) { flow.spec = this.teams.config(flow.teamId).workflow; flow.hops = 0; flow.runs = Object.fromEntries(flow.spec.steps.map(s => [s.id, { state: s.id === flow.phase ? flow.itemId ? 'active' : 'ready' : 'dormant', itemId: s.id === flow.phase ? flow.itemId : '', visit: 0 }])); this.save(flow); }
+    if (!flow.completions) {
+      flow.completions={}; flow.completionClock=0;
+      // Migrate only actually completed bindings; delegation and rejected reviews are not prerequisites.
+      const completed=this.bindings(flow).filter(b=>b.run.state==='done').sort((a,b)=> {
+        const rank=(id:string)=>Number(this.db.prepare('SELECT max(seq) AS n FROM workflow_transitions WHERE item_id=?').get(id)?.n ?? 0);
+        return rank(a.run.itemId)-rank(b.run.itemId);
+      });
+      for(const {step} of completed) flow.completions[step.id]=++flow.completionClock;
+      this.save(flow);
+    }
     return flow;
   }
   private save(flow: Flow) { this.db.prepare('INSERT INTO task_flows VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET payload=excluded.payload').run(flow.taskId, JSON.stringify(flow)); }
+  private projectClosure(flow: Flow) {
+    // Core state is authoritative; the UI database is a rebuildable projection.
+    if(!flow.closure) return; // Older closed records did not record a reason; do not guess one.
+    const task=this.tasks.get(flow.taskId);
+    const unresolved=flow.closure==='canceled' && this.queue.list().some(i=>i.taskId===flow.taskId && ['pending','in-progress','blocked'].includes(i.state));
+    const status=flow.closure==='accepted' ? 'completed' : unresolved ? 'blocked' : 'canceled';
+    const executionSummary=flow.closure==='accepted' ? flow.summary : task.executionSummary;
+    if(task.status!==status || task.teamId!==flow.teamId || task.executionSummary!==executionSummary) this.tasks.update(flow.taskId,{status,teamId:flow.teamId,executionSummary});
+  }
+  private commandReceipt(requestId: string | undefined, name: string, input: unknown) {
+    if(!requestId) return;
+    if(requestId.length>512) throw new Error('Invalid command ID');
+    const row=this.db.prepare('SELECT * FROM execution_commands WHERE request_id=?').get(requestId);
+    if(row && (row.name!==name || row.payload!==JSON.stringify(input))) throw new Error('Request ID reused with different command');
+    return row;
+  }
+  private recordCommand(requestId:string | undefined,name:string,input:unknown,result:unknown,source?:QueueItem) {
+    if(requestId) this.db.prepare('INSERT INTO execution_commands (request_id,name,payload,source_id,source_generation,result) VALUES (?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET result=excluded.result')
+      .run(requestId,name,JSON.stringify(input),source?.id ?? null,source?.generation ?? null,JSON.stringify(result));
+  }
   private serial<T>(taskId: string, action: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Execution service closing'));
     const pending = (this.operations.get(taskId) ?? Promise.resolve()).catch(() => {}).then(action); this.operations.set(taskId, pending);
@@ -152,20 +211,19 @@ export class TaskExecutionService {
     for (const id of task.attachmentIds) { const file = this.materials.require(id), target = join(materialDir, `${id}-${basename(file.attachment.name)}`); await copyFile(file.path, target); files.push(target); }
     const spec = structuredClone(team.config.workflow);
     const flow: Flow = { taskId, teamId, cycle: randomUUID(), phase: spec.entry, itemId: '', feedback: files.length ? `任务资料：\n${files.join('\n')}` : '', artifacts: [], summary: '', closed: false, spec, hops: 0,
-      runs: Object.fromEntries(spec.steps.map(s => [s.id, { state: s.id === spec.entry || s.depends_on?.length === 0 ? 'ready' : 'dormant', itemId: '', visit: 0 }])) };
+      completions: {}, completionClock: 0, runs: Object.fromEntries(spec.steps.map(s => [s.id, { state: s.id === spec.entry || s.depends_on?.length === 0 ? 'ready' : 'dormant', itemId: '', visit: 0 }])) };
     await writeMission(await taskDirectory(seats[0].workspace, task.id), task.brief);
     transaction(this.db, () => { this.save(flow); this.prepareReady(flow); }); this.scheduler.tick(); this.changed();
   }); }
   private prepareReady(flow: Flow) {
     if (this.closed || flow.paused || flow.closed) return;
-    for (const step of flow.spec.steps) {
-      const run = flow.runs[step.id];
-      if (run.state === 'dormant' && step.depends_on?.length && step.depends_on.every(id => flow.runs[id].state === 'done')) { run.state = 'ready'; run.driveHops = Math.max(...step.depends_on.map(id => flow.runs[id].driveHops ?? 0)); }
-      if (run.state === 'ready' && (!step.depends_on?.length || step.depends_on.every(id => flow.runs[id].state === 'done'))) { flow.phase = step.id; this.ensureItem(flow); }
+    const completed=this.completedSteps(flow);
+    for (const {step,run} of this.bindings(flow)) {
+      if (run.state === 'ready' && (!step.depends_on?.length || step.depends_on.every(id => completed.has(id)))) { flow.phase = step.id; this.ensureItem(flow,step,run); }
     }
     this.focus(flow); if (!this.flow(flow.taskId)?.closed) this.save(flow);
   }
-  private focus(flow: Flow) { const entry = Object.entries(flow.runs).find(([,r]) => r.state === 'active' || r.state === 'ready'); if (entry) { flow.phase = entry[0]; flow.itemId = entry[1].itemId; } }
+  private focus(flow: Flow) { const entry = this.bindings(flow).find(b => b.run.state === 'active' || b.run.state === 'ready'); if (entry) { flow.phase = entry.step.id; flow.itemId = entry.run.itemId; } }
   private reviewable(flow: Flow): boolean {
     return !flow.fault && !flow.paused && Object.values(flow.runs).some(r => r.state === 'done') &&
       !Object.values(flow.runs).some(r => r.state === 'active' || r.state === 'ready') &&
@@ -186,8 +244,7 @@ export class TaskExecutionService {
     }
     this.save(flow);
   }
-  private ensureItem(flow: Flow) {
-    const step = flow.spec.steps.find(s => s.id === flow.phase)!, run = flow.runs[step.id];
+  private ensureItem(flow: Flow, step: WorkflowStep, run: StepRun) {
     const task = this.tasks.get(flow.taskId), seat = this.teams.taskSeats(flow.teamId, flow.taskId).find(s => s.role === (step.gate?.target && step.gate.target !== 'human:user' ? step.gate.target : step.actor_role))!;
     if (this.closed || this.flow(flow.taskId)?.closed) return;
     const history = Object.entries(flow.runs).filter(([,r]) => r.summary).map(([id,r]) => `${id}: ${r.summary}`).join('\n');
@@ -200,18 +257,24 @@ export class TaskExecutionService {
   sync(): Promise<void> { if (this.syncPromise) return this.syncPromise; this.syncPromise = this.syncInner().finally(() => { this.syncPromise = undefined; }); return this.syncPromise; }
   private async syncInner() {
     if (this.closed) return;
+    for(const row of this.db.prepare('SELECT task_id FROM task_flows').all()) {
+      const flow=this.flow(String(row.task_id))!;
+      if(!flow.closed) continue;
+      if(flow.closure==='canceled') for(const item of this.queue.list().filter(i=>i.taskId===flow.taskId && ['pending','in-progress','blocked'].includes(i.state))) await this.scheduler.cancel(item.id,'human:user');
+      this.projectClosure(flow);
+    }
     for (const item of this.queue.list().filter(i => i.blockedOn === 'runtime:unknown')) {
       let result = await this.ports.get(item.destination)?.reconcile?.(item);
       const flow = this.flow(item.taskId);
-      const step = flow?.spec.steps.find(s => flow.runs[s.id].itemId === item.id);
-      if (result?.kind === 'handoff' && (step?.review || !this.teams.targets(this.teams.seat(item.destination), item.taskId).some(s => s.sessionId === (result as { destination: string }).destination))) result = { kind: 'failed', reason: '恢复结果中的交接不符合角色约束' };
+      const step = flow && this.binding(flow,item.id)?.step;
+      if (result?.kind === 'handoff' && !this.workflowHandoff(item) && (step?.review || !this.teams.targets(this.teams.seat(item.destination), item.taskId).some(s => s.sessionId === (result as { destination?: string }).destination))) result = { kind: 'failed', reason: '恢复结果中的交接不符合角色约束' };
       if (result) {
         let recovered: QueueItem;
         try { recovered = this.queue.reconcileResult(item.id, item.generation!, result); }
         catch (error) { recovered = this.queue.reconcileResult(item.id, item.generation!, { kind: 'failed', reason: `恢复回执不合法：${error instanceof Error ? error.message : 'invalid result'}` }); }
         if (recovered.successorId) this.queue.pauseStopped(recovered.successorId);
         else this.queue.pauseStopped(recovered.id);
-        if (flow?.closed) { if (recovered.cancelRequested) this.queue.confirmCancel(recovered.id, recovered.generation); this.tasks.update(item.taskId, { status: 'canceled' }); }
+        if (flow?.closed) { if (recovered.cancelRequested) this.queue.confirmCancel(recovered.id, recovered.generation); if(flow.closure) this.projectClosure(flow); else this.tasks.update(item.taskId, { status: 'canceled' }); }
         else this.tasks.update(item.taskId, { status: 'blocked', executionSummary: '已核对原执行状态，等待用户恢复' });
       }
     }
@@ -230,7 +293,7 @@ export class TaskExecutionService {
       const flow = this.flow(String(row.task_id))!; if (flow.closed || flow.paused) continue; if (flow.fault) { for (const item of this.queue.list().filter(i => i.taskId === flow.taskId && ['pending','in-progress'].includes(i.state))) await this.scheduler.cancel(item.id, 'workflow:fault'); this.tasks.update(flow.taskId, { status: 'failed', executionSummary: flow.fault }); continue; }
       try {
         transaction(this.db, () => {
-          for (const [stepId, run] of Object.entries(flow.runs)) if (run.state === 'active') {
+          for (const {step:{id:stepId}, run} of this.bindings(flow)) if (run.state === 'active') {
             const item=this.queue.get(run.itemId),seat=this.teams.seat(item.destination),last=this.db.prepare('SELECT at FROM execution_events WHERE item_id=? AND actor<>? ORDER BY seq DESC LIMIT 1').get(item.id,'watchdog');
             this.watchdog.scan({item,workspace:seat.workspace,lastActivity:Date.parse(String(last?.at ?? item.updatedAt)),context:seat.nativeId ? codexContext(seat.nativeId) : undefined},(flow.spec.watchdogs ?? defaultWatchdogs).filter(w=>!w.step_ids || w.step_ids.includes(stepId)),wake=> {
               this.queue.note(item.id,'watchdog',wake.note);
@@ -239,11 +302,22 @@ export class TaskExecutionService {
               else if(['context-usage-threshold','periodic-reminder','artifact-pool-ready'].includes(wake.policy)) this.routeException(flow,stepId,item,'stuck_overdue',false,wake.receipt);
             });
           }
+          // Recovery packets are real obligations too. A stalled coordinator escalates
+          // to a user obligation, never to another copy of itself or a presumed-dead worker.
+          for(const record of Object.values(flow.exceptions ?? {})) if(record.status==='open' && record.itemId) {
+            const item=this.queue.get(record.itemId),seat=this.teams.seat(item.destination);
+            const last=this.db.prepare('SELECT at FROM execution_events WHERE item_id=? AND actor<>? ORDER BY seq DESC LIMIT 1').get(item.id,'watchdog');
+            this.watchdog.scan({item,workspace:seat.workspace,lastActivity:Date.parse(String(last?.at ?? item.updatedAt)),context:seat.nativeId ? codexContext(seat.nativeId) : undefined},(flow.spec.watchdogs ?? defaultWatchdogs).filter(w=>!w.step_ids || w.step_ids.includes(record.stepId)),wake=> {
+              this.queue.note(item.id,'watchdog',wake.note);
+              if(item.state==='blocked' && item.blockedOn?.startsWith('external:') && ['artifact-pool-ready','periodic-reminder'].includes(wake.policy)) this.queue.retry(item.id,'watchdog','诊断等待条件有新证据，重新检查');
+              else if(!item.blockedOn?.startsWith('human:')) this.escalateHuman(flow,record,`协调者义务 ${item.id} 需要处理：${wake.note}。原进程状态仍为 ${item.state}，未自动重启。`);
+            });
+          }
           this.save(flow);
         });
         // Legacy rows may have completed before transactional projection existed.
-        for (const step of flow.spec.steps) {
-          const run = flow.runs[step.id]; if (run.state !== 'active') continue;
+        for (const {run} of this.bindings(flow)) {
+          if (run.state !== 'active') continue;
           const item = this.queue.get(run.itemId);
           if (this.db.prepare('SELECT 1 FROM workflow_transitions WHERE item_id=? AND generation=?').get(item.id, item.generation)) continue;
           const result: ExecutionResult | undefined = item.state === 'done' ? { kind: 'completed', summary: item.resolution ?? '', evidenceRef: item.evidenceRef! }
@@ -270,6 +344,7 @@ export class TaskExecutionService {
     this.changed();
   }
   private flushKnowledge() {
+    try { this.knowledge.flushCheckpoints(); } catch { /* Durable journal is retried on the next sync/context read. */ }
     for (const row of this.db.prepare("SELECT q.* FROM execution_queue q JOIN workflow_transitions w ON w.item_id=q.id AND w.generation=q.generation WHERE q.state='done' AND q.evidence_ref IS NOT NULL AND NOT EXISTS (SELECT 1 FROM knowledge_projections s WHERE s.record_key=q.id || '-' || q.generation)").all()) {
       const item = this.queue.get(String(row.id));
       try { this.knowledge.record(this.teams.seat(item.destination), item, this.evidence(item.evidenceRef!)); } catch { /* Durable result remains available for knowledge projection retry. */ }
@@ -283,37 +358,39 @@ export class TaskExecutionService {
   /** Runs inside the queue's transaction: packet close, frontier, successors and trail commit together. */
   private projectResult(item: QueueItem, result: ExecutionResult) {
     const flow = this.flow(item.taskId); if (!flow || flow.closed) return;
-    const diagnostic = Object.values(flow.exceptions ?? {}).find(e => e.itemId === item.id && e.status === 'open');
+    if(result.knowledge) this.knowledge.recordClosure(this.teams.seat(item.destination),item,result.knowledge);
+    const diagnostic = Object.values(flow.exceptions ?? {}).find(e => e.itemId === item.id && e.status !== 'resolved');
     if (diagnostic) { this.resolveException(flow, diagnostic, item, result); return; }
-    const step = flow.spec.steps.find(s => flow.runs[s.id].state === 'active' && flow.runs[s.id].itemId === item.id);
-    if (!step || this.db.prepare('SELECT 1 FROM workflow_transitions WHERE item_id=? AND generation=?').get(item.id, item.generation)) return;
-    const run = flow.runs[step.id];
+    const binding = this.binding(flow,item.id);
+    if (!binding || binding.run.state!=='active' || this.db.prepare('SELECT 1 FROM workflow_transitions WHERE item_id=? AND generation=?').get(item.id, item.generation)) return;
+    const {step,run} = binding;
     const rejected = result.kind === 'failed' && result.reason.startsWith('执行回执被拒绝');
-    const exit: WorkflowExit = result.kind === 'completed' ? 'done' : result.kind === 'handoff' ? 'handoff' : result.kind === 'failed' ? 'failed' : 'waiting';
+    const completedEvidence=result.kind==='completed' ? this.evidence(result.evidenceRef) : undefined;
+    const exit: WorkflowExit = result.kind === 'completed' ? completedEvidence?.verdict==='changes_requested' ? 'failed' : 'done' : result.kind === 'handoff' ? 'handoff' : result.kind === 'failed' ? 'failed' : 'waiting';
     if (!rejected && result.kind !== 'canceled' && step.allowed_exits && !step.allowed_exits.includes(exit)) throw new Error(`步骤不允许 ${exit}`);
-    const receipt = result.kind === 'completed' ? this.evidence(result.evidenceRef).acceptance : result.acceptance;
+    const receipt = result.kind === 'completed' ? completedEvidence?.acceptance : result.acceptance;
     if (!rejected && result.kind !== 'canceled' && exit !== 'waiting' && step.acceptance && (!receipt || receipt.candidate !== step.acceptance.candidate || !step.acceptance.verdicts.includes(receipt.verdict) || receipt.evidence_ref !== step.acceptance.evidence_ref)) throw new Error('验收回执必须匹配 candidate、verdict、evidence_ref');
     if (!rejected && step.next_hop?.mode === 'forbid' && result.kind === 'handoff' && !step.next_hop.on?.[exit]) throw new Error('步骤禁止后继交接');
     if (!rejected && step.next_hop?.mode === 'require' && result.kind === 'handoff' && !nextStep(flow.spec,step,exit)) throw new Error('步骤要求明确的后继角色或路由');
     if ((result.kind === 'handoff' || result.kind === 'blocked') && item.state === 'done' ) {
-      run.summary = result.reason; this.advance(flow,step.id,exit);
+      run.summary = result.reason; this.advance(flow,step,run,exit);
     } else if (result.kind === 'handoff' && item.state === 'handed-off') {
-      const target = this.teams.seat(result.destination);
+      const target = this.teams.seat(result.destination!);
       this.countHop(flow,run);
       if (step.review || step.gate && step.gate.target !== 'human:user' || flow.spec.steps.some(s => (s.review && s.actor_role === target.role || s.gate?.target === target.role))) throw new Error('执行工作不能交给保留的独立审核席位');
       if (!this.teams.targets(this.teams.seat(item.destination), item.taskId).some(s => s.sessionId === target.sessionId)) throw new Error('交接目标未在团队连线中声明');
       run.itemId = item.successorId!;
       if (flow.paused || this.closed) this.queue.pauseStopped(run.itemId);
     } else if (result.kind === 'completed' && item.state === 'done') {
-      const evidence = this.evidence(result.evidenceRef);
+      const evidence = completedEvidence!;
       const seat = this.teams.seat(item.destination);
       if(step.gate && step.gate.target !== 'human:user' && (seat.role !== step.gate.target || flow.authors?.includes(seat.id))) throw new Error('角色审批必须由独立的目标席位完成');
       if (step.review && (seat.role !== step.actor_role || flow.authors?.includes(seat.id) || !['pass','changes_requested'].includes(evidence.verdict ?? ''))) throw new Error('独立审核角色、作者隔离或审核结论不成立');
       run.summary = evidence.summary; flow.summary = evidence.summary; flow.artifacts = [...new Set([...flow.artifacts, ...evidence.artifacts])];
-      this.advance(flow, step.id, evidence.verdict === 'changes_requested' ? 'failed' : 'done');
+      this.advance(flow, step, run, evidence.verdict === 'changes_requested' ? 'failed' : 'done');
     } else if (result.kind === 'failed') {
       if (rejected) { this.recovery.record(step.id,item); this.routeException(flow,step.id,item,'unmapped_failed',true); }
-      else if (step.next_hop?.on?.failed) { run.summary = result.reason; this.advance(flow, step.id, 'failed'); }
+      else if (step.next_hop?.on?.failed) { run.summary = result.reason; this.advance(flow, step, run, 'failed'); }
       else this.routeException(flow, step.id, item, 'unmapped_failed');
     }
     if (result.kind === 'blocked' && item.blockedOn !== 'runtime:unknown' && /^(runtime|context|auth):/.test(item.blockedOn ?? '')) this.routeException(flow, step.id, item, 'unmapped_failed');
@@ -336,8 +413,9 @@ export class TaskExecutionService {
     const role = exceptionTarget(flow.spec.exception_routing, kind, source.blockedOn, process.env.ORBIT_EXCEPTION_POLICY === 'human_only' ? 'human_only' : 'orchestrator');
     const seat = this.teams.taskSeats(flow.teamId, flow.taskId).find(s => s.role === role);
     // Bound recovery recursion, never ask the failed occupant to certify its own recovery.
-    if (forceHuman || !seat || seat.sessionId === source.destination || (flow.runs[stepId].driveHops ?? 0) >= flow.spec.max_hops || this.closed || flow.paused) { this.escalateHuman(flow,record,source.resolution ?? '需要用户处理'); return; }
-    this.countHop(flow,flow.runs[stepId]);
+    const run=this.binding(flow,source.id)?.run;
+    if (forceHuman || !run || !seat || seat.sessionId === source.destination || (run.driveHops ?? 0) >= flow.spec.max_hops || this.closed || flow.paused) { this.escalateHuman(flow,record,source.resolution ?? '需要用户处理'); return; }
+    this.countHop(flow,run);
     const diagnostic = this.queue.enqueue({ requestId: `exception:${key}`, taskId: flow.taskId, source: source.destination, destination: seat.sessionId,
       body: `异常诊断 ${kind}。原义务 ${source.id}，状态 ${source.state}，原因：${source.resolution ?? ''}。\n仅分析证据和选择恢复建议，不接手制作或代替用户审批。使用平台工具 get_work 查询原义务。以 outcome=completed 提交诊断，recoveryAction 必须为 retry（重试已停止步骤）、rotate（新会话接替已停止步骤）、ask_user（请求用户处理）或 abort（保留失败）。summary 说明原因；不得因超时推断进程已停止。完成诊断不代表原任务完成。` });
     record.itemId = diagnostic.id; record.status = 'open';
@@ -346,6 +424,10 @@ export class TaskExecutionService {
     if (this.db.prepare('SELECT 1 FROM workflow_transitions WHERE item_id=? AND generation=?').get(item.id, item.generation)) return;
     const source = this.queue.get(record.sourceId);
     if (source.generation !== record.sourceGeneration || ['done','handed-off','canceled','denied'].includes(source.state) || source.successorId) record.status = 'resolved';
+    else if(record.status==='human') {
+      // Late coordinator results are evidence for the user, not authority to override escalation.
+      if(record.humanItemId) this.queue.note(record.humanItemId,'workflow:exception',`协调者后续结果：${result.kind}，请核对原义务 ${source.id}。`);
+    }
     else if (result.kind === 'completed') {
       const evidence = this.evidence(result.evidenceRef), action = evidence.recoveryAction;
       if (!action) throw new Error('诊断缺少恢复建议');
@@ -361,21 +443,18 @@ export class TaskExecutionService {
     this.db.prepare('INSERT INTO workflow_transitions (item_id,generation,task_id,step_id,exit,payload) VALUES (?,?,?,?,?,?)')
       .run(item.id, item.generation!, item.taskId, `exception:${record.stepId}`, result.kind, JSON.stringify({ result, status: record.status, sourceId: source.id }));
   }
-  private advance(flow: Flow, id: string, exit: WorkflowExit) {
-    const step = flow.spec.steps.find(s => s.id === id)!;
-    if (step.allowed_exits && !step.allowed_exits.includes(exit)) throw new Error(`步骤 ${id} 不允许 ${exit}`);
+  private advance(flow: Flow, step: WorkflowStep, run: StepRun, exit: WorkflowExit) {
+    if (step.allowed_exits && !step.allowed_exits.includes(exit)) throw new Error(`步骤 ${step.id} 不允许 ${exit}`);
     const target = nextStep(flow.spec,step,exit);
-    flow.runs[id].state = exit === 'done' || exit === 'handoff' ? 'done' : 'routed';
-    if (!target && exit !== 'done' && exit !== 'handoff') throw new Error(`步骤 ${id} 未通过且没有返工路径`);
-    if (!target && flow.spec.steps.some(s => s.depends_on?.includes(id) && flow.runs[s.id].state === 'dormant' && s.depends_on.every(dep => flow.runs[dep].state === 'done'))) this.countHop(flow,flow.runs[id]);
-    if (target) {
-      this.countHop(flow,flow.runs[id]);
-      const driveHops = flow.runs[id].driveHops;
-      for (const key of [target, ...successors(flow.spec, target)]) {
-        const run = flow.runs[key]; if (run.state === 'active') throw new Error('路由目标仍在执行，不能覆盖');
-        run.state = key === target ? 'ready' : 'dormant'; run.itemId = ''; run.visit++; run.driveHops = driveHops;
-      }
-    }
+    const completes=exit==='done' || exit==='handoff';
+    run.state = completes ? 'done' : 'routed';
+    if (!target && !completes) throw new Error(`步骤 ${step.id} 未通过且没有返工路径`);
+    if(completes) { flow.completionClock=(flow.completionClock ?? 0)+1; (flow.completions ??= {})[step.id]=flow.completionClock; }
+    const completed=this.completedSteps(flow),live=new Set(this.bindings(flow).filter(b=>['active','ready'].includes(b.run.state)).map(b=>b.step.id));
+    // Append order determines freshness. An old completion cannot satisfy a newer prerequisite.
+    const next=target ? [target] : completes ? flow.spec.steps.filter(s=>s.depends_on?.includes(step.id) && s.depends_on.every(id=>completed.has(id)) && !completed.has(s.id) && !live.has(s.id)).map(s=>s.id) : [];
+    if(next.length) this.countHop(flow,run);
+    for(const id of next) this.readyBinding(flow,id,run.driveHops ?? 0);
   }
   private countHop(flow: Flow, run: StepRun) { if ((run.driveHops ?? 0) + 1 > flow.spec.max_hops) throw new Error('工作流流转次数达到上限'); run.driveHops = (run.driveHops ?? 0) + 1; flow.hops++; }
   private escalateHuman(flow: Flow, record: ExceptionRun, reason: string) {
@@ -386,8 +465,8 @@ export class TaskExecutionService {
   }
   private redrive(flow: Flow, source: QueueItem, decision: string, resetBudget = true) {
     if (!['failed','blocked'].includes(source.state) || source.blockedOn === 'runtime:unknown' || source.cancelRequested || source.blockedOn?.startsWith('human:')) throw new Error('只能恢复已确认停止的失败执行');
-    const step = flow.spec.steps.find(s => flow.runs[s.id].itemId === source.id); if (!step) throw new Error('旧执行已被替换');
-    const run = flow.runs[step.id]; run.state = 'ready'; run.itemId = ''; run.visit++; run.resumeCount = (run.resumeCount ?? 0) + 1; if (resetBudget) run.driveHops = 0;
+    const binding=this.binding(flow,source.id); if (!binding) throw new Error('旧执行已被替换');
+    const {step,run}=binding; run.state = 'ready'; run.itemId = ''; run.visit=Math.max(...this.bindings(flow).filter(b=>b.step.id===step.id).map(b=>b.run.visit))+1; run.resumeCount = (run.resumeCount ?? 0) + 1; if (resetBudget) run.driveHops = 0;
     flow.fault = undefined; flow.feedback += `\n恢复步骤 ${step.id}：${decision}`;
     this.save(flow); this.prepareReady(flow);
     this.recovery.resolve(step.id,source,run.itemId,decision); this.queue.supersede(source.id,run.itemId,'workflow:redrive',decision);
@@ -420,32 +499,41 @@ export class TaskExecutionService {
     if (exception) { transaction(this.db,() => { this.queue.resolveHuman(exception.humanItemId!,text); exception.status='resolved'; flow.feedback += `\n用户异常处理意见：${text}`; this.save(flow); }); this.changed(); return; }
     const { item } = this.selected(taskId, itemId); if (item.blockedOn === 'human:gate') throw new Error('审批步骤需要明确批准，不能用普通回答绕过'); this.queue.answer(item.id, text); this.scheduler.tick(); this.changed(); }
   approve(taskId: string, answer: string, itemId?: string) { const { item } = this.selected(taskId, itemId); this.queue.approveGate(item.id, answer); this.scheduler.tick(); this.changed(); }
-  retry(taskId: string, itemId?: string) {
-    const saved = this.requireFlow(taskId);
-    if(this.teams.taskSeats(saved.teamId,taskId).some(s => this.teams.preparing(s.sessionId))) throw new Error('会话接替准备中');
-    if (saved.paused) {
-      const items = this.queue.list().filter(i => i.taskId === taskId);
-      if (items.some(i => i.blockedOn === 'runtime:unknown')) throw new Error('上次执行状态未知，请先核对运行时');
-      transaction(this.db,()=> { saved.paused=false; this.save(saved); for (const item of items) if(item.blockedOn==='application:paused') this.queue.resumePaused(item.id); }); this.scheduler.tick(); void this.sync(); this.changed(); return;
-    }
-    const { flow, item } = this.selected(taskId, itemId);
+  retry(taskId: string, itemId?: string, requestId?: string) {
+    const input={taskId,itemId:itemId ?? null};
+    const result=transaction(this.db,()=> {
+      const receipt=this.commandReceipt(requestId,'retry_task',input);
+      if(receipt?.result) return JSON.parse(String(receipt.result)) as TaskExecution | null;
+      const saved = this.requireFlow(taskId);
+      if(this.teams.taskSeats(saved.teamId,taskId).some(s => this.teams.preparing(s.sessionId))) throw new Error('会话接替准备中');
+      if (saved.paused) {
+        const items = this.queue.list().filter(i => i.taskId === taskId);
+        if (items.some(i => i.blockedOn === 'runtime:unknown')) throw new Error('上次执行状态未知，请先核对运行时');
+        saved.paused=false; this.save(saved); for (const item of items) if(item.blockedOn==='application:paused') this.queue.resumePaused(item.id);
+        const result=this.detail(taskId); this.recordCommand(requestId,'retry_task',input,result); return result;
+      }
+      const { flow, item } = this.selected(taskId, itemId);
 
-    if (item.blockedOn === 'runtime:unknown') throw new Error('上次执行状态未知，请先核对运行时，不能自动重试。');
-    if (item.blockedOn?.startsWith('human:')) throw new Error('请先回答问题或明确批准');
-    if (item.blockedOn === 'application:paused') this.queue.resumePaused(item.id); else transaction(this.db,() => this.redrive(flow,item,'用户显式恢复失败步骤')); this.scheduler.tick(); this.changed();
+      if (item.blockedOn === 'runtime:unknown') throw new Error('上次执行状态未知，请先核对运行时，不能自动重试。');
+      if (item.blockedOn?.startsWith('human:')) throw new Error('请先回答问题或明确批准');
+      if (item.blockedOn === 'application:paused') this.queue.resumePaused(item.id); else this.redrive(flow,item,'用户显式恢复失败步骤');
+      const result=this.detail(taskId); this.recordCommand(requestId,'retry_task',input,result,item); return result;
+    });
+    this.scheduler.tick(); this.changed(); return result;
   }
   cancel(taskId: string) { return this.serial(taskId, async () => {
-    if (['completed','canceled'].includes(this.tasks.get(taskId).status)) return;
-    const flow = this.flow(taskId); if (!flow) { this.tasks.cancel(taskId); this.changed(); return; }
-    flow.closed = true; this.save(flow);
+    const flow = this.flow(taskId);
+    if(flow?.closure==='accepted') {this.projectClosure(flow);this.changed();return;}
+    if (['completed','canceled'].includes(this.tasks.get(taskId).status) && !flow?.closure) return;
+    if (!flow) { this.tasks.cancel(taskId); this.changed(); return; }
+    flow.closed = true; flow.closure='canceled'; this.save(flow);
     for (const item of this.queue.list().filter(i => i.taskId === taskId)) await this.scheduler.cancel(item.id, 'human:user');
-    const unresolved = this.queue.list().some(i => i.taskId === taskId && ['in-progress','blocked'].includes(i.state));
-    this.tasks.update(taskId, { status: unresolved ? 'blocked' : 'canceled' }); this.changed();
+    this.projectClosure(flow); this.changed();
   }); }
-  accept(taskId: string) { transaction(this.db, () => { const flow = this.requireFlow(taskId); if (!this.reviewable(flow)) throw new Error('任务尚未到达验收阶段。'); flow.closed = true; this.save(flow); }); this.tasks.update(taskId, { status: 'completed' }); this.changed(); }
+  accept(taskId: string) { const flow=transaction(this.db, () => { const flow = this.flow(taskId); if(!flow || flow.closed && flow.closure!=='accepted' || !flow.closed && !this.reviewable(flow)) throw new Error('任务尚未到达验收阶段。'); flow.closed = true; flow.closure='accepted'; this.save(flow); return flow; }); this.projectClosure(flow); this.changed(); }
   revise(taskId: string, feedback: string) { return this.serial(taskId, async () => {
     const flow = this.requireFlow(taskId); if (!this.reviewable(flow) || typeof feedback !== 'string' || !feedback.trim() || feedback.length > 16000) throw new Error('请在待验收任务中填写修改要求。');
-    flow.cycle = randomUUID(); flow.hops = 0; flow.feedback += `\n用户修改要求：${feedback}`;
+    flow.cycle = randomUUID(); flow.hops = 0; flow.completions={}; flow.completionClock=0; flow.runs={}; flow.feedback += `\n用户修改要求：${feedback}`;
     for (const step of flow.spec.steps) flow.runs[step.id] = { state: step.id === flow.spec.entry || step.depends_on?.length === 0 ? 'ready' : 'dormant', itemId: '', visit: 0 };
     transaction(this.db, () => { this.save(flow); this.prepareReady(flow); }); this.tasks.update(taskId, { status: 'running', executionSummary: '正在根据修改要求重新执行' }); this.scheduler.tick(); this.changed();
   }); }
@@ -458,19 +546,24 @@ export class TaskExecutionService {
     if (flow.paused && !this.queue.list().some(i => i.taskId === taskId && i.blockedOn === 'runtime:unknown')) this.retry(taskId);
     this.changed();
   }
-  rotateSession(taskId: string, itemId?: string, resetBudget = true) { return this.serial(taskId,async () => {
-    const {item}=this.selected(taskId,itemId); if(!['failed','blocked'].includes(item.state) || item.blockedOn==='runtime:unknown' || item.cancelRequested || item.blockedOn?.startsWith('human:')) throw new Error('只能接替已确认停止的失败执行');
+  rotateSession(taskId: string, itemId?: string, resetBudget = true, requestId?: string) { return this.serial(taskId,async () => {
+    const input={taskId,itemId:itemId ?? null,resetBudget},receipt=this.commandReceipt(requestId,'rotate_task_session',input);
+    if(receipt?.result) return JSON.parse(String(receipt.result)) as TaskExecution | null;
+    const {item}=this.selected(taskId,receipt?.source_id ? String(receipt.source_id) : itemId); if(!['failed','blocked'].includes(item.state) || item.blockedOn==='runtime:unknown' || item.cancelRequested || item.blockedOn?.startsWith('human:')) throw new Error('只能接替已确认停止的失败执行');
+    if(item.blockedOn==='application:paused') throw new Error('请先恢复暂停状态，再按原阻塞原因选择回答、审批或接替');
+    if(receipt && receipt.source_generation!==item.generation) throw new Error('执行代次已改变，原接替请求不能应用到新执行');
     const seatId=this.teams.seat(item.destination).id; if(this.queue.list().some(i=>(i.state==='in-progress' || i.blockedOn==='runtime:unknown') && this.teams.seat(i.destination).id===seatId)) throw new Error('该席位仍有其他执行，不能同时接替');
     const port=this.ports.get(item.destination); if(!port?.prepareSuccessor) throw new Error('执行器不支持就绪后接替');
+    if(requestId && !receipt) this.db.prepare('INSERT INTO execution_commands (request_id,name,payload,source_id,source_generation) VALUES (?,?,?,?,?)').run(requestId,'rotate_task_session',JSON.stringify(input),item.id,item.generation);
     const prior=this.teams.beginSuccessor(item.destination), controller=new AbortController(); this.preparations.set(item.destination,controller);
     try {
       const context=await this.executionContext(prior,item,'handover');
       const prepared=await port.prepareSuccessor(controller.signal,context);
       if(this.closed || controller.signal.aborted) throw new Error('应用关闭，接替未提交');
-      transaction(this.db,()=> { const flow=this.requireFlow(taskId), live=this.queue.get(item.id); if(live.generation!==item.generation) throw new Error('执行代次已改变'); this.teams.commitSuccessor(item.destination,prior.generation,prepared.nativeId); this.redrive(flow,live,'新会话已验证就绪，提交接替',resetBudget); for(const e of Object.values(flow.exceptions ?? {})) if(e.sourceId===item.id) e.rotationRequested=false; this.save(flow); });
+      transaction(this.db,()=> { const flow=this.requireFlow(taskId), live=this.queue.get(item.id); if(live.generation!==item.generation) throw new Error('执行代次已改变'); this.teams.commitSuccessor(item.destination,prior.generation,prepared.nativeId); flow.paused=false; this.redrive(flow,live,'新会话已验证就绪，提交接替',resetBudget); for(const e of Object.values(flow.exceptions ?? {})) if(e.sourceId===item.id) e.rotationRequested=false; this.save(flow); this.recordCommand(requestId,'rotate_task_session',input,this.detail(taskId),item); });
     } catch(error) { this.teams.abandonSuccessor(item.destination,String(error)); throw error; }
     finally { this.preparations.delete(item.destination); }
-    this.scheduler.tick(); this.changed();
+    this.scheduler.tick(); this.changed(); return requestId ? JSON.parse(String(this.commandReceipt(requestId,'rotate_task_session',input)!.result)) as TaskExecution | null : this.detail(taskId);
   }); }
   resultPath(taskId: string, index: number) { const flow = this.flow(taskId); if (!flow || !Number.isInteger(index) || !flow.artifacts[index]) throw new Error('成果不存在。'); return flow.artifacts[index]; }
   private requireFlow(id: string) { const flow = this.flow(id); if (!flow || flow.closed) throw new Error('任务没有可操作的执行。'); return flow; }

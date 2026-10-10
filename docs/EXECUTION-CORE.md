@@ -8,13 +8,13 @@
 | --- | --- |
 | workflow-types / projector / frontier | 可配置角色、步骤、静态依赖、并行与汇合、四类结果的显式路由、角色 gate/验收契约、结构化审核返工、流转上限；双角色是默认模板，不是类型限制 |
 | rig / role / topology | 持久成员与声明连线；后台 handoff 必须匹配同团队允许目标；审核角色不能把审核责任委托给作者 |
-| queue-repository | 幂等请求、优先级、代际保护、事务交接、阻塞关系、定时唤醒和退避；阻塞项终态会重新唤醒依赖者核对结果 |
+| queue-repository | 幂等请求、优先级、代际保护、事务交接、阻塞关系、定时唤醒和退避；等待关系随交接迁移并保留定时器，结果返回等待者或义务最终结束才释放 |
 | queue-pickup | 持久 watchdog 检测未领取和停滞，支持分步骤策略；不据此判死、重跑或宣布完成 |
 | runtime-adapter / successor | 仅 Codex exec/resume；原生 ID 持久化；已停止的失败执行读取前任原生记录、准备新会话、验证独立 ID 与 READY，再提交绑定与续跑；声明 authenticated 时还需核验启动回执 |
 | startup resolver / projection / proof | 有序叠加本地启动材料；投影完整技能目录、合并所属指导块、保存来源与所有权；必需材料缺失或本地修改冲突时阻止启动 |
 | runtime reconciliation | 按义务与代际核对持久结果；缺少结果时仅在记录的 PID 已不存在时确认停止，不把进程退出当作成功；无法核对的运行继续保留 unknown |
 | human gates | 用户问题与审批分开；普通回答/重试不能绕过审批步骤 |
-| seat recap / learned | 团队稳定席位的 RECAP、不可覆盖的来源版本与 LEARNED；结构化 lessons 存入带证据来源的团队 MemoryStore，在后续任务查询并注入 |
+| seat recap / learned | 团队稳定席位的 RECAP、不可覆盖的来源版本与 LEARNED；支持执行中独立检查点和非完成退出记录，lessons 带来源存入团队 MemoryStore |
 | context-packs | 文件 manifest、atoms/sections、依赖闭包、作者顺序、运行时/情境、来源及预算报告；RECAP 根目录绑定稳定席位 |
 
 前台工具统一由 application/platform-tools.ts 执行，详见 [工具说明](AGENT-TOOLS.md)。文本与语音目前暴露同一完整工具集，不先限制语音或强制转文本。模板查询返回摘要，按需读取详情；模板更新不改变实例；创建团队不启动任务。
@@ -80,7 +80,7 @@ node scripts/execution-smoke.mjs：另一个需要配置前台模型的全链路
 - 上下文：成员可配置 context_profiles 与 context_atoms；get_team 返回导入包的目录，configure_team_context 提供无未结束任务时的配置入口。缺省选兼容 profile。原生 rollout 的 compacted/token_count 事实用于 post-compaction 与上下文阈值，不用累计计费量冒充上下文使用率。原生压缩仍由 Codex 自己完成；后台 read_context 可在工具边界重新读取 profile，下一次执行也重新注入。不会声称闭合 stdin 的 exec 支持任意时刻的中途注入。
 - RECAP：写入前拒绝重复 Markdown 地址与未闭合代码围栏；作者结构提示写入 RECAP.advisories.json，不据此否定成果语义。已归档版本与来源仍保留。
 
-平台工具：前台 21 个（文本/语音共享），后台 12 个（另有 list_tools 发现入口）。新增能力通过真实入口调用，生命周期测试覆盖回滚、代际、重启、退出与独立审核。真实模型测试不替代所有失败分支的确定性测试。
+平台工具：前台 21 个（文本/语音共享），后台 13 个（另有 list_tools 发现入口）。新增能力通过真实入口调用，生命周期测试覆盖回滚、代际、重启、退出与独立审核。真实模型测试不替代所有失败分支的确定性测试。
 
 ## 原始对话与原生压缩
 
@@ -109,3 +109,24 @@ Pi 使用原生 SessionManager 和原生阈值压缩，完整 entries 独立持�
 | Orbit 常驻 Agent 额外需求 | Room 历史独立于语音短上下文、Pi 压缩与重启 | history：旧语音/分页/长消息；text：真实 Pi 压缩后 search_history→read_history |
 
 适配边界：成果池只读任务目录内相对路径；本地启动根由 source_root 指定，技能用席位命名空间安装。Codex exec 通过启动 stdin 按序交付 send_text 动作，不提供 tmux 的交互式 slash_command 注入，未知动作拒绝；任意上游资源包/rigspec 导入仍属待定范围。旧 edge-artifact-required 的 paths 无法表达 source→target，必须改为 context.source/target 后重新创建配置；不猜测关系或继续用文件存在冒充引用核验。
+
+## PR #7 后审计的八项修复
+
+基线为 Orbit `08d3a5bc`，上游仍为 `4b48ca21`。以下属于已承诺行为的实现缺口，不能归类成新的产品决定。对应反例和边界测试保存在 `tests/audit-followthrough.test.ts`；测试使用真实应用、队列和 SQLite，执行结果由可控 ExecutionPort 提供。上游源码用于逐项比对，这不是运行上游测试套件的兼容认证。
+
+| 缺口 | 当前实现 | 可复查验证 |
+| --- | --- | --- |
+| 等待者被前任 handoff 提前唤醒 | 同事务更新 blocker，绑定活跃接手义务；保留暂停状态、期限和退避；交回等待者时释放 | A1、跨重启暂停恢复、事务拒绝回滚；上游 queue-repository `propagateBlockerCompletion` |
+| 依赖图末端 handoff 额外委派 | 作为前置完成；末端没有后继，直接关闭步骤；原生回执和工具均可省略 destination；Orbit 独立审核仍须核验结论 | A2、审核不能绕过、真实 Codex `handoff-checkpoint-smoke.ts`；上游 workflow-projector `no-follow-on` |
+| 并行返工覆盖或拒绝活跃分支 | 每次步骤执行保留独立绑定；显式路由只新增目标；以追加顺序判断完成是否晚于依赖，决定后续重跑 | A3 两种完成顺序及汇合、路由到仍在运行的同一步骤；上游 workflow-projector `latestCompletion` / `remainingFrontier` |
+| 重复恢复请求再次执行新失败 | retry/rotate 回执与恢复变更同事务；接替请求先绑定原义务及代次，跨重启重放不重新选目标 | A4、并发接替重放、回执写入失败注入；参考上游 workflow-runtime 的 occurrence/decision replay |
+| 核心已验收但展示仍待验收 | 核心持久化 accepted/canceled 原因；启动及同步重建展示，不依赖上次跨库写入成功 | A5、取消投影失败、旧展示不能覆盖已验收决定；这是 Orbit 自身分库引入的缺陷 |
+| 上下文预算变成执行硬门槛 | 交付完整已选内容，附带 overage/dropCandidates 和 skipped 提示；保留原有缺失必需材料检查 | A6、大于 16K 估算 tokens 的包、压缩后缺失 RECAP 提示；上游 profile-composer 预算为 advisory |
+| 协调者诊断未被巡检 | 诊断义务也执行 watchdog；停滞升级为人工义务，保留真实进程状态，避免递归派生诊断 | A7、重复扫描只产生一项人工处置；上游 queue-stuck-sweep 扫描普通诊断义务而排除巡检自身 finding |
+| RECAP 依赖成功完成 | write_recap 在执行中保存；question/waiting/failed/handoff 回执也落持久日志；文件投影可重试，按事件顺序保护新版本 | A8、真实工具桥、代次/取消拒绝、文件写入失败、原生回执恢复；参考上游 recap-write / seat-recap-store |
+
+新的 `Flow.completions` 使用核心事务内单调序号；时钟回拨不改变依赖新旧关系。既有单绑定流程按持久完成记录迁移；修订任务另起流程 cycle。新的终态记录支持投影重建；旧版本只保存 `closed=true` 且展示写入已经失败的记录，没有足够证据区分“验收”或“取消”，不会自动猜测、批量改写这些历史记录。
+
+检查点持久日志与完成事件共用追加序号。文件、RECAP.advisories.json 和团队经验在事务提交后投影；一个席位文件故障不阻塞其他席位，失败项保留待重试。原始版本和来源不因工具重放删除。预算提示不代替 Codex/Pi 原生压缩。
+
+本次离线检查包含 125 个测试及 TypeScript、生产构建。`scripts/team-execution-smoke.ts` 增加真实 Codex 在完成前调用 write_recap 的验证；`scripts/handoff-checkpoint-smoke.ts` 验证真实 Codex 无 destination 的图末端交接。实际运行结果记入 PR。这里仅声明上述八项及对应验证范围，不把测试数量当作所有 OpenRig 底层功能都已对齐的证明。

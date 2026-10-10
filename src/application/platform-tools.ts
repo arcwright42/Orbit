@@ -28,10 +28,10 @@ export function platformTools(workspace: WorkspaceService, execution: TaskExecut
       case 'dispatch_task': await execution.dispatch(string(input.taskId), string(input.teamId), input.directory === undefined ? undefined : string(input.directory)); break;
       case 'get_task_execution': break;
       case 'answer_task': execution.answer(string(input.taskId), string(input.answer), itemId); break;
-      case 'retry_task': execution.retry(string(input.taskId), itemId); break;
+      case 'retry_task': return execution.retry(string(input.taskId), itemId, callId);
       case 'revise_task': await execution.revise(string(input.taskId), string(input.feedback)); break;
       case 'approve_task_step': execution.approve(string(input.taskId), string(input.answer), itemId); break;
-      case 'rotate_task_session': await execution.rotateSession(string(input.taskId), itemId); break;
+      case 'rotate_task_session': return execution.rotateSession(string(input.taskId), itemId, true, callId);
       case 'accept_task': execution.accept(string(input.taskId)); return workspace.snapshot().tasks.find(t => t.id === input.taskId);
       case 'cancel_task': await execution.cancel(string(input.taskId)); return workspace.snapshot().tasks.find(t => t.id === input.taskId);
       case 'search_team_memory': { const team = execution.teams.require(string(input.teamId)); return execution.memory.search([{ kind: 'team', id: team.id }], string(input.query)); }

@@ -6,13 +6,14 @@ export interface BackendTool { name: string; description: string; input: Record<
 export const backendTools: BackendTool[] = [
   { name:'startup_proof',description:'按当前启动挑战提交上下文接收回执；READY 不是核验。只有当前执行凭证、会话及代次有效。',input:{challengeId:'当前挑战 ID',answer:'启动文本中的精确 answer',sessionId:'启动挑战中的执行会话 ID',generation:'启动挑战中的席位代次'} },
   { name:'read_context',description:'启动、交接或原生压缩后重新读取当前上下文 profile、席位记录与团队经验',input:{} },
+  { name:'write_recap',description:'立即持久化当前席位交接记录及可选团队经验，不结束义务；在交接、等待、压缩前保存进度和决定',input:{recap:'Markdown 交接记录，保留关键决定与理由',lessons:'可选团队经验，不含凭证'} },
   { name: 'list_work', description: '查询当前任务的执行义务与真实状态，不跨任务', input: { after: '可选队列偏移', limit: '1–100，默认20' } },
   { name: 'get_work', description: '读取同一任务的一个义务及其上下文', input: { itemId: '义务 ID，默认当前义务' } },
   { name: 'get_team', description: '查询本团队角色及允许交接的成员', input: {} },
   { name: 'search_team_memory', description: '检索本团队经验及来源', input: { query: '检索词' } },
   { name: 'read_team_memory', description: '读取本团队一条经验原文', input: { memoryId: '经验 ID' } },
   { name: 'report_progress', description: '记录可核查的当前进度，不代表完成', input: { note: '进展及证据' } },
-  { name: 'handoff_work', description: '准备交接当前义务；结束本轮后才生效', input: { acceptance: '验收契约要求时填写 candidate/verdict/evidence_ref', destination: '允许目标的 sessionId', summary: '交接依据、进度及接手要求' } },
+  { name: 'handoff_work', description: '准备交接当前义务；结束本轮后才生效', input: { acceptance: '验收契约要求时填写 candidate/verdict/evidence_ref', destination: '普通委派填允许目标的 sessionId；get_team.workflowHandoff=true 时省略，由工作流推进（末端结束）', summary: '交接依据、进度及接手要求', recap:'可选交接记录',lessons:'可选团队经验' } },
   { name: 'wait_work', description: '准备等待外部条件或同任务义务；退出后停放', input: { blockedOn: 'external:原因 或 queue:义务ID', summary: '等待原因', wakeAfterSeconds: '可选再次检查秒数', wakeMaxSeconds: '可选退避上限秒数' } },
   { name: 'request_help', description: '准备向用户提问，不能代替用户批准', input: { question: '需要用户回答的问题' } },
   { name: 'complete_work', description: '提交成果意图；进程正常结束后核验文件和审核结论，再提交状态', input: { acceptance: '有契约时填写 candidate/verdict/evidence_ref 对象', summary: '成果摘要', artifacts: '工作目录相对文件路径数组', verdict: '审核必须 pass / changes_requested', recap: '交接决定与理由', lessons: '可复用经验，没有则空', recoveryAction: '仅异常诊断：retry / rotate / ask_user / abort'  } },
@@ -30,7 +31,7 @@ export class BackendAttempt {
   private closure?: Record<string, unknown>;
   private requests: Promise<unknown> = Promise.resolve();
   private receipts = new Map<string, { payload: string; reply: unknown }>();
-  constructor(private invoke: (name: string, input: Record<string, unknown>) => BackendReply | Promise<BackendReply>) {}
+  constructor(private invoke: (name: string, input: Record<string, unknown>, requestId: string) => BackendReply | Promise<BackendReply>) {}
   get staged() { return this.closure; }
   orientation(proof:StartupProof) { this.startup=proof; }
   async open() {
@@ -49,7 +50,7 @@ export class BackendAttempt {
         if (this.receipts.size >= 1000) throw new Error('Tool request limit reached');
         if(this.startup?.required && !this.startup.verified && !['list_tools','startup_proof','read_context'].includes(name)) throw new Error('请先提交当前 startup_proof，再调用工作工具');
         if(name==='startup_proof' && !this.startup) throw new Error('No startup challenge for this launch');
-        const result = name === 'list_tools' ? { value: backendTools } : name==='startup_proof' ? {value:this.startup!.verify(input)} : await this.invoke(name, input);
+        const result = name === 'list_tools' ? { value: backendTools } : name==='startup_proof' ? {value:this.startup!.verify(input)} : await this.invoke(name, input, requestId);
         if (result.closure) {
           if (this.closure && JSON.stringify(this.closure) !== JSON.stringify(result.closure)) throw new Error('结束意图已提交，不可提交冲突的结束意图');
           this.closure = result.closure;

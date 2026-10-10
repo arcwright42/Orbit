@@ -18,7 +18,7 @@ try {
   const config=service.templates.get('build-review').config;
   config.startup={source_root:source,agent:{files:[{path:'guide.md',delivery_hint:'guidance_merge'},{path:'smoke-skill/SKILL.md',delivery_hint:'skill_install'}],actions:[{type:'startup_proof',value:'authenticated',idempotent:true}]}};
   const team = service.createTeam('Codex 集成验证', config);
-  const task = workspace.submit({ requestId: 'live-team-test', text: '先调用平台工具 get_team 和 list_work，再调用 report_progress，note 严格为 ORBIT_BACKEND_TOOL_OK。最后通过 complete_work 提交成果。在工作目录创建 hello.txt，内容严格为 ORBIT_TEAM_OK（无换行）。执行者完成后返回 completed。检查者独立读取核对，正确则 verdict=pass。artifacts 列 hello.txt。recap 解释验证依据，lessons 记录本项目精确文本文件检查方法。', attachmentIds: [] }).tasks[0];
+  const task = workspace.submit({ requestId: 'live-team-test', text: '先调用平台工具 get_team 和 list_work，再调用 report_progress，note 严格为 ORBIT_BACKEND_TOOL_OK。执行者和检查者都须在最终结束前调用 write_recap，recap 写 ## Decisions 标题及 ORBIT_CHECKPOINT_OK，lessons 留空。最后通过 complete_work 提交成果。在工作目录创建 hello.txt，内容严格为 ORBIT_TEAM_OK（无换行）。执行者完成后返回 completed。检查者独立读取核对，正确则 verdict=pass。artifacts 列 hello.txt。最终 recap 解释验证依据，lessons 记录本项目精确文本文件检查方法。', attachmentIds: [] }).tasks[0];
   await service.dispatch(task.id, team.id);
   const deadline = Date.now() + 240000; let previous = '';
   while (Date.now() < deadline) {
@@ -35,10 +35,16 @@ try {
   assert.ok(service.teams.taskSeats(team.id, task.id).filter(s => s.role !== 'coordinator').every(s => s.nativeId));
   assert.ok(service.queue.list().every(item => service.queue.events(0,1000).some(e => e.itemId === item.id && e.note === 'ORBIT_BACKEND_TOOL_OK')));
   assert.ok(service.queue.list().every(item => service.queue.events(0,1000).some(e => e.itemId === item.id && e.note === 'ORBIT_STARTUP_SKILL_OK')));
+  assert.ok(service.queue.list().every(item => service.queue.events(0,1000).some(e => e.itemId === item.id && e.actor === 'knowledge' && e.state === 'in-progress')));
+  for(const seat of service.teams.taskSeats(team.id,task.id).filter(s=>s.role!=='coordinator')) {
+    const versions=join(service.teams.seatRoot(seat),'recap-superseded');
+    const contents=await Promise.all((await readdir(versions)).map(file=>readFile(join(versions,file),'utf8')));
+    assert.ok(contents.some(text=>text.includes('ORBIT_CHECKPOINT_OK')),'pre-completion checkpoint remains archived');
+  }
   const receipts=await Promise.all((await readdir(join(root,'evidence'))).filter(f=>f.endsWith('.startup-proof.json')).map(async f=>JSON.parse(await readFile(join(root,'evidence',f),'utf8'))));
   assert.equal(receipts.filter(r=>r.status==='verified').length,2);
   assert.equal(service.memory.list({ kind: 'team', id: team.id }).length, 2);
   service.accept(task.id); assert.equal(workspace.snapshot().tasks[0].status, 'completed');
-  console.log('PASS: real Codex builder/reviewer, projected skill read, authenticated startup proofs, structured verdict, artifact, team learning, user acceptance.');
+  console.log('PASS: real Codex builder/reviewer, projected skill read, authenticated startup proofs, live write_recap checkpoints, structured verdict, artifact, team learning, user acceptance.');
   console.log('Evidence directory:', root);
 } finally { await service.close(); db.close(); }

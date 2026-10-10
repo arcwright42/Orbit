@@ -37,13 +37,15 @@
 | get_task_execution | taskId | 步骤、角色、执行义务 ID、阻塞、成果、工作目录及事件 |
 | answer_task | taskId、answer、itemId? | 回答等待用户信息的步骤；不能绕过审批 |
 | approve_task_step | taskId、answer、itemId? | 用户明确批准审批步骤后才调用 |
-| retry_task | taskId、itemId? | 恢复退出时暂停的任务，或重试已确认停止的失败执行；未知进程不可重跑 |
-| rotate_task_session | taskId、itemId? | 对已停止的失败执行启用新 Codex 会话，继承任务与团队知识；不改变任务 ID |
+| retry_task | taskId、itemId? | 恢复退出时暂停的任务，或重试已确认停止的失败执行；未知进程不可重跑；调用 ID 持久化去重 |
+| rotate_task_session | taskId、itemId? | 对已停止的失败执行启用新 Codex 会话，继承任务与团队知识；调用 ID 绑定原失败义务，重复调用返回原回执 |
 | revise_task | taskId、feedback | 待验收任务返工，保留任务内会话与先前成果 |
 | accept_task | taskId | 用户明确验收后才完成任务；后台 completed 不代表用户接受 |
 | cancel_task | taskId | 用户明确要求取消；覆盖全部分支；确认进程退出后才结束 |
 
 并行执行时先用 get_task_execution 获取 itemId，再对特定步骤操作。省略时选择首个待处理步骤。后台成员按声明的团队连线交接；显式工作流路由创建目标步骤，未映射委托保留当前义务；前台不直接操作底层队列表或进程。
+
+retry_task / rotate_task_session 的调用 ID 由 harness 传入。恢复变更与成功回执在核心库同一事务提交；重启后重放仍返回原回执，不重新选择最近一次失败。相同 ID 换操作或参数会报冲突。主动处理新的失败必须使用新的调用 ID。接替准备失败可以用原请求重试，但仍限定原义务及代次。
 
 ## 默认调用顺序
 
@@ -70,14 +72,17 @@
 | --- | --- |
 | list_work / get_work | 当前任务的执行义务、状态及最近事件 |
 | read_context | 读取当前情境的 profile、席位记录及团队经验，供压缩后恢复 |
+| write_recap | 当前执行凭证下立即保存本席位的 recap 和可选 lessons；不结束任务。返回 recordKey、sourceRef、recorded、projected；projected=false 表示日志已持久化，文件投影待重试 |
 | startup_proof | 用本次 challengeId/answer/sessionId/generation 提交身份绑定的启动回执；未声明时无挑战。普通 READY 不等于已核验 |
-| get_team | 本团队角色和经过审核隔离过滤的交接目标 |
+| get_team | 本团队角色、经过审核隔离过滤的交接目标、workflowHandoff；后者为 true 时 handoff_work 可省略 destination，由工作流决定后继或结束末端 |
 | search_team_memory / read_team_memory | 本团队经验及来源 |
 | report_progress | 写入当前义务的进度事件 |
 | handoff_work / wait_work / request_help | 准备交接、等待或用户提问 |
 | complete_work | 准备成果、审核结论、经验或异常恢复建议 |
 
 结束类工具只准备意图；原生进程正常退出、成果核验通过后才提交。重复 requestId 幂等，冲突意图拒绝；凭证在进程结束时撤销。业务接口校验任务、团队、执行代次及取消状态。为了访问本机接口，Codex workspace-write 启用 network_access；这不是只允许回环网络的防火墙配置。
+
+write_recap({recap, lessons?}) 是独立检查点，可在交接、等待、提问或原生压缩前调用。请求 ID 绑定当前义务和代次；重放不新增版本，冲突内容被拒绝。recap 必须可按 Markdown 标题寻址；旧版本带来源保留。取消、退出或换代后不能继续写入。handoff_work / wait_work / request_help 也可携带 recap/lessons；原生最终回执的 question、waiting、failed、handoff 不再丢弃这些字段。记录经验不代表义务已完成。
 
 工作流可配置 `exception_routing: { orchestrator_role: "coordinator", default: "orchestrator", classes: { stuck_overdue: "human_only" } }`。协调者必须是声明的团队成员。缺省/类级路由支持 orchestrator、human_only；未声明协调者则留给用户处理。人工审批和认证阻塞不能交给模型代批。诊断完成不代表任务完成，只有已停止的执行才能 retry/rotate。
 
