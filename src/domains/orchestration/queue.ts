@@ -125,7 +125,7 @@ export class ExecutionQueue {
           this.change(item, 'blocked', item.destination, 'Cancellation pending; handoff suppressed.', 'cancellation-unconfirmed');
         } else {
           const successor = this.insert({ requestId: `handoff:${item.id}:${generation}`, taskId: item.taskId,
-            source: item.destination, destination: result.destination, body: result.body, priority: item.priority }, item.id);
+            source: item.destination, destination: required(result.destination!, 'handoff destination'), body: result.body, priority: item.priority }, item.id);
           this.db.prepare('UPDATE execution_queue SET successor_id = ? WHERE id = ?').run(successor.id, item.id);
           this.change(item, 'handed-off', item.destination, required(result.reason, 'handoff reason'));
         }
@@ -158,6 +158,7 @@ export class ExecutionQueue {
       }
       const finished = this.get(id);
       this.projector?.(finished, result);
+      if (finished.state === 'handed-off') this.retargetWaiters(finished.id);
       return finished;
   }
 
@@ -243,6 +244,12 @@ export class ExecutionQueue {
   wakeDue(now = Date.now()): number {
     return transaction(this.db, () => {
       let count = 0;
+      // Also repairs records from before custody propagation was implemented.
+      for (const item of this.list().filter(i=>i.state==='blocked' && !i.cancelRequested)) {
+        const pause=item.blockedOn==='application:paused' ? this.db.prepare('SELECT payload FROM queue_pauses WHERE item_id=?').get(item.id) : undefined;
+        const blocker=pause ? JSON.parse(String(pause.payload)).blockedOn : item.blockedOn;
+        if(blocker?.startsWith('queue:')) this.retargetWaiters(blocker.slice(6),[item]);
+      }
       for (const item of this.list()) {
         if (item.state !== 'blocked' || item.cancelRequested || item.blockedOn === 'runtime:unknown' || item.blockedOn === 'application:paused') continue;
         const blocker = item.blockedOn?.startsWith('queue:') ? this.get(item.blockedOn.slice(6)) : undefined;
@@ -259,14 +266,55 @@ export class ExecutionQueue {
     });
   }
 
+  /** Preserve the park and its backoff deadline while custody moves onward.
+   * Returning custody to the waiting owner is result arrival, so wakeDue releases it.
+   * Paused parks retain the same binding and cannot accidentally resume the app.
+   */
+  private retargetWaiters(sourceId: string, waiters = this.list()) {
+    for (const waiter of waiters) {
+      if (waiter.state !== 'blocked' || waiter.cancelRequested) continue;
+      const pause = waiter.blockedOn === 'application:paused' ? this.db.prepare('SELECT payload FROM queue_pauses WHERE item_id=?').get(waiter.id) : undefined;
+      const parked = pause ? JSON.parse(String(pause.payload)) : undefined;
+      const oldBlocker = parked?.blockedOn ?? waiter.blockedOn;
+      if (oldBlocker !== `queue:${sourceId}`) continue;
+      let source = this.get(sourceId);
+      const seen = new Set([waiter.id]);
+      while (source.state === 'handed-off' && source.successorId) {
+        if (seen.has(source.id)) throw new Error('Blocker custody cycle');
+        seen.add(source.id);
+        const successor = this.get(source.successorId);
+        if (successor.taskId !== waiter.taskId) throw new Error('Invalid blocker custody');
+        if (successor.destination === waiter.destination) break;
+        if (!activeStates.includes(successor.state) && successor.state !== 'handed-off') break;
+        if (seen.has(successor.id)) throw new Error('Blocker custody cycle');
+        source = successor;
+      }
+      const blocker = `queue:${source.id}`;
+      if (blocker === oldBlocker) continue;
+      if (parked) {
+        parked.blockedOn = blocker;
+        this.db.prepare('UPDATE queue_pauses SET payload=? WHERE item_id=?').run(JSON.stringify(parked), waiter.id);
+        this.note(waiter.id, 'scheduler', `等待的义务已交接：${sourceId} → ${source.id}`);
+      } else this.change(waiter, 'blocked', 'scheduler', `等待的义务已交接：${sourceId} → ${source.id}`, blocker);
+      this.db.prepare('UPDATE queue_wakes SET blocker=? WHERE item_id=? AND blocker=?').run(blocker, waiter.id, oldBlocker);
+    }
+  }
+
   supersede(id: string, successorId: string, actor: string, reason: string) {
     const item = this.get(id); if (item.state === 'in-progress' || item.blockedOn === 'runtime:unknown' || item.cancelRequested) throw new Error('Work has not stopped');
     this.db.prepare('UPDATE execution_queue SET successor_id=? WHERE id=?').run(successorId,id);
     this.change(item, item.state === 'failed' ? 'failed' : 'done', actor, reason);
   }
   resolveHuman(id: string, answer: string) {
-    const item = this.get(id); if (item.state !== 'blocked' || !item.blockedOn?.startsWith('human:')) throw new Error('No human decision pending');
-    this.change(item, 'done', 'human:user', required(answer,'answer'));
+    return transaction(this.db,()=> {
+      const item = this.get(id);
+      const pause=item.blockedOn==='application:paused' ? this.db.prepare('SELECT payload FROM queue_pauses WHERE item_id=?').get(id) : undefined;
+      const previous=pause ? JSON.parse(String(pause.payload)) : undefined;
+      const blocker=previous?.state==='blocked' ? previous.blockedOn : item.blockedOn;
+      if (item.state !== 'blocked' || !blocker?.startsWith('human:')) throw new Error('No human decision pending');
+      this.change(item, 'done', 'human:user', required(answer,'answer'));
+      if(pause) this.db.prepare('DELETE FROM queue_pauses WHERE item_id=?').run(id);
+    });
   }
   note(id: string, actor: string, note: string) { const item = this.get(id); this.event(id,item.state,actor,required(note,'note')); }
 

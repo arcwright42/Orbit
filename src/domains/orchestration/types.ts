@@ -26,13 +26,14 @@ export interface QueueItem extends Required<EnqueueInput> {
 }
 export interface QueueEvent { seq: number; itemId: string; state: QueueState; actor: string; note: string; at: string }
 export interface AcceptanceReceipt { candidate: string; verdict: string; evidence_ref: string }
+export interface KnowledgeCheckpoint { recap?: string; lessons?: string; sourceRef?: string }
 export type ExecutionResult = (
   | { kind: 'question'; question: string }
   | { kind: 'completed'; summary: string; evidenceRef: string }
   | { kind: 'blocked'; reason: string; blockedOn: string; wakeAfterSeconds?: number; wakeMaxSeconds?: number }
   | { kind: 'failed'; reason: string }
   | { kind: 'canceled'; reason: string }
-  | { kind: 'handoff'; destination: string; body: string; reason: string }) & { acceptance?: AcceptanceReceipt };
+  | { kind: 'handoff'; destination?: string; body: string; reason: string }) & { acceptance?: AcceptanceReceipt; knowledge?: KnowledgeCheckpoint };
 export const activeStates: readonly QueueState[] = ['pending', 'in-progress', 'blocked'];
 export function required(value: string, field: string, max = 32_000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`Invalid ${field}.`);

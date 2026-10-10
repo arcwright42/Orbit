@@ -32,7 +32,8 @@ export class CodexRuntime implements ExecutionPort {
     private context: (seat: Seat, item: QueueItem) => Promise<string> = async () => '',
     private binary = process.env.ORBIT_CODEX_BIN || (existsSync(join(homedir(), '.local/bin/codex')) ? join(homedir(), '.local/bin/codex') : 'codex'),
     private backend?: (seat: Seat, item: QueueItem) => BackendAttempt,
-    private predecessor: (nativeId:string|null) => string = predecessorHistory) {}
+    private predecessor: (nativeId:string|null) => string = predecessorHistory,
+    private workflowHandoff: (item:QueueItem) => boolean = () => false) {}
 
   async execute(item: QueueItem, signal: AbortSignal): Promise<ExecutionResult> {
     try {
@@ -62,9 +63,10 @@ export class CodexRuntime implements ExecutionPort {
     bridge?.orientation(proof);
     const cliPath = process.env.ORBIT_AGENT_CLI || resolve(typeof __dirname === 'string' ? __dirname : process.cwd(), typeof __dirname === 'string' ? 'orbit-agent.cjs' : 'scripts/orbit-agent.cjs');
     const cliCommand = `node '${cliPath.replaceAll("'", "'\"'\"'")}'`;
-    const prompt = `${bridge ? `平台工具已就绪。先执行 ${cliCommand} list_tools '{}' 查询用法。可以查询任务/同伴、读取团队经验、报告进度，以及提交交接/等待/提问/完成意图。凭证来自环境，不要打印环境或凭证。工具返回 prepared 仅表示已准备，结束本轮后平台才核验并提交。长任务阶段之间调用 get_work 查看 watchdog 与协作事件。原生压缩后先调用 read_context 重新读取上下文。优先使用平台工具，不要伪造本地队列数据。\n` : ''}你是 Orbit 团队的 ${seat.name}（${seat.role}）。${seat.instructions}。
+    const prompt = `${bridge ? `平台工具已就绪。先执行 ${cliCommand} list_tools '{}' 查询用法。可以查询任务/同伴、读取团队经验、报告进度，以及提交交接/等待/提问/完成意图。凭证来自环境，不要打印环境或凭证。工具返回 prepared 仅表示已准备，结束本轮后平台才核验并提交。长任务阶段之间调用 get_work 查看 watchdog 与协作事件。交接、等待或压缩前用 write_recap 保存决定、进度和后续要求；它立即持久化，不代表任务完成。原生压缩后先调用 read_context 重新读取上下文。优先使用平台工具，不要伪造本地队列数据。\n` : ''}你是 Orbit 团队的 ${seat.name}（${seat.role}）。${seat.instructions}。
 你在持久会话中，任务 ${item.taskId}，执行义务 ${item.id}。
 缺少用户信息时返回 outcome=question。需要其他成员接手当前义务时返回 outcome=handoff，destination 填允许目标的 sessionId，summary 必须包含交接目标、进度、证据和后续要求。
+${this.workflowHandoff(item) ? '本步骤由工作流路由 handoff：destination 可留空，平台会创建后续步骤；依赖图末端直接结束，不需要再找委派成员。' : ''}
 允许交接目标：${bridge ? '使用 get_team 查询当前允许目标（平台会隔离审核席位）' : JSON.stringify(targets.map(s => ({ role: s.role, sessionId: s.sessionId })))}。
 等待外部条件时返回 outcome=waiting，blockedOn 用 external:原因 或 queue:同任务义务ID；可用正整数 wakeAfterSeconds 设置再次检查时间，wakeMaxSeconds 设置退避上限。不需要等待时这两个值为 0。
 完成返回 outcome=completed，artifacts 只能列工作目录内真实相对文件路径。审核步骤必须填写 verdict=pass 或 changes_requested。recap 记录关键决定及理由；lessons 仅记录值得团队跨任务复用的经验，没有则空字符串。不要写入凭证。
@@ -121,20 +123,26 @@ ${item.body}`;
       if (!result || typeof result !== 'object' || !('outcome' in result) || !('summary' in result) || typeof result.summary !== 'string') throw new Error('Invalid result');
       const acceptance = 'acceptance' in result ? result.acceptance as RuntimeEvidence['acceptance'] : undefined;
       if (acceptance && ['candidate','verdict','evidence_ref'].some(k => typeof (acceptance as unknown as Record<string,unknown>)[k] !== 'string')) throw new Error('Invalid acceptance receipt');
-      if (result.outcome === 'question' && 'question' in result && typeof result.question === 'string' && result.question.trim()) return { kind: 'question', question: result.question };
+      const extra=result as Record<string,unknown>;
+      for(const key of ['recap','lessons']) if(extra[key]!==undefined && (typeof extra[key]!=='string' || extra[key].length>16000)) throw new Error('Invalid authored knowledge');
+      const knowledge=(extra.recap as string | undefined)?.trim() || (extra.lessons as string | undefined)?.trim()
+        ? {recap:extra.recap as string | undefined,lessons:extra.lessons as string | undefined,sourceRef:this.recordPath(item,'settled')} : undefined;
+      // The settled receipt journals knowledge for every exit, independently of evidence for completion.
+      const finish=(value:ExecutionResult):ExecutionResult=>({...value,...(knowledge ? {knowledge} : {})});
+      if (result.outcome === 'question' && 'question' in result && typeof result.question === 'string' && result.question.trim()) return finish({ kind: 'question', question: result.question, acceptance:acceptance ?? undefined });
       if (result.outcome === 'handoff') {
         const destination = 'destination' in result ? result.destination : '';
-        if (typeof destination !== 'string' || !targets.some(s => s.sessionId === destination)) throw new Error('Handoff target is not a declared team edge');
-        return { kind: 'handoff', destination, body: `${item.body}\n\n${seat.name}交接：${result.summary}`, reason: result.summary, ...(acceptance ? {acceptance} : {}) };
+        if (typeof destination !== 'string' || (!destination && !this.workflowHandoff(item)) || destination && !targets.some(s => s.sessionId === destination)) throw new Error('Handoff target is not a declared team edge');
+        return finish({ kind: 'handoff', destination:destination || undefined, body: `${item.body}\n\n${seat.name}交接：${result.summary}`, reason: result.summary, ...(acceptance ? {acceptance} : {}) });
       }
       if (result.outcome === 'waiting') {
         const blockedOn = 'blockedOn' in result ? result.blockedOn : '';
         if (typeof blockedOn !== 'string' || !/^(external|queue):.+/.test(blockedOn)) throw new Error('Invalid waiting blocker');
         const delay = 'wakeAfterSeconds' in result ? result.wakeAfterSeconds : 0, max = 'wakeMaxSeconds' in result ? result.wakeMaxSeconds : 0;
         if (typeof delay !== 'number' || !Number.isInteger(delay) || delay < 0 || delay > 86400 || typeof max !== 'number' || !Number.isInteger(max) || max < 0 || max > 604800 || max > 0 && max < delay) throw new Error('Invalid wake interval');
-        return { kind: 'blocked', reason: result.summary, blockedOn, ...(delay ? { wakeAfterSeconds: delay, ...(max ? { wakeMaxSeconds: max } : {}) } : {}) };
+        return finish({ kind: 'blocked', reason: result.summary, blockedOn, acceptance:acceptance ?? undefined, ...(delay ? { wakeAfterSeconds: delay, ...(max ? { wakeMaxSeconds: max } : {}) } : {}) });
       }
-      if (result.outcome === 'failed') return { kind: 'failed', acceptance: acceptance ?? undefined, reason: result.summary || '执行者报告失败' };
+      if (result.outcome === 'failed') return finish({ kind: 'failed', acceptance: acceptance ?? undefined, reason: result.summary || '执行者报告失败' });
       if (result.outcome !== 'completed' || !('artifacts' in result) || !Array.isArray(result.artifacts) || !result.summary.trim()) throw new Error('Invalid completed result');
       const artifacts: string[] = [];
       for (const file of result.artifacts) {
@@ -144,7 +152,6 @@ ${item.body}`;
         artifacts.push(path);
       }
       const evidencePath = join(this.evidenceRoot, `${attempt}.evidence.json`);
-      const extra = result as Record<string, unknown>;
       if (extra.verdict !== undefined && !['','pass','changes_requested'].includes(String(extra.verdict))) throw new Error('Invalid review verdict');
       if (extra.recoveryAction !== undefined && !['','retry','rotate','ask_user','abort'].includes(String(extra.recoveryAction))) throw new Error('Invalid recovery action');
       for (const key of ['recap','lessons']) if (extra[key] !== undefined && (typeof extra[key] !== 'string' || extra[key].length > 16000)) throw new Error('Invalid authored knowledge');

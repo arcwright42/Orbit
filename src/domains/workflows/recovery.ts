@@ -13,8 +13,8 @@ export class WorkflowRecovery {
   }
   resolve(stepId: string, source: QueueItem, successorId: string, decision: string) {
     const id = this.record(stepId,source);
-    const row = this.db.prepare('SELECT successor_id FROM workflow_failures WHERE id=?').get(id)!;
-    if (row.successor_id && row.successor_id !== successorId) throw new Error('Failure occurrence already redriven');
+    const row = this.db.prepare('SELECT successor_id,decision FROM workflow_failures WHERE id=?').get(id)!;
+    if (row.successor_id && (row.successor_id !== successorId || row.decision !== decision)) throw new Error('Failure occurrence already redriven with another decision');
     this.db.prepare('UPDATE workflow_failures SET successor_id=?,decision=?,resolved_at=? WHERE id=?').run(successorId,decision,new Date().toISOString(),id);
   }
 }
