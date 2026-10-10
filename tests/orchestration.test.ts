@@ -147,3 +147,33 @@ test('uncertain remote execution retains global capacity as well as its destinat
     assert.equal(f.queue.claimNext(['b'], 2)?.destination, 'b');
   } finally { f.close(); }
 });
+
+test('durable timers back off and blockers wake only after terminal evidence', async () => {
+  const { openCoreDatabase } = await import('../src/infrastructure/core-database');
+  const { ExecutionQueue } = await import('../src/domains/orchestration/queue');
+  const db = openCoreDatabase(':memory:'); const queue = new ExecutionQueue(db);
+  try {
+    const first = queue.enqueue({ requestId: 'wake-first', taskId: 'task', source: 'user', destination: 'a', body: 'first' });
+    const second = queue.enqueue({ requestId: 'wake-second', taskId: 'task', source: 'user', destination: 'b', body: 'second' });
+    const a = queue.claimNext(['a'], 4)!; const b = queue.claimNext(['b'], 4)!;
+    queue.finish(b.id, b.generation!, { kind: 'blocked', blockedOn: `queue:${first.id}`, reason: 'wait for first' }); assert.equal(queue.wakeDue(), 0);
+    queue.finish(a.id, a.generation!, { kind: 'failed', reason: 'failure is terminal too' }); assert.equal(queue.wakeDue(), 1); assert.equal(queue.get(second.id).state, 'pending');
+    const again = queue.claimNext(['b'], 4)!;
+    queue.finish(again.id, again.generation!, { kind: 'blocked', blockedOn: 'external:build', reason: 'waiting', wakeAfterSeconds: 10, wakeMaxSeconds: 40 });
+    assert.equal(queue.wakeDue(Date.now() + 9000), 0); assert.equal(queue.wakeDue(Date.now() + 11000), 1);
+    const last = queue.claimNext(['b'], 4)!;
+    queue.finish(last.id, last.generation!, { kind: 'blocked', blockedOn: 'external:build', reason: 'waiting', wakeAfterSeconds: 10, wakeMaxSeconds: 40 });
+    assert.equal(Number(db.prepare('SELECT delay_seconds FROM queue_wakes').get()?.delay_seconds), 20);
+    queue.pauseStopped(last.id); assert.equal(queue.wakeDue(Date.now() + 50000), 0); queue.resumePaused(last.id); assert.equal(queue.wakeDue(Date.now() + 50000), 1);
+  } finally { db.close(); }
+});
+
+test('a settled invalid blocker fails honestly instead of reserving an unknown process', async () => {
+  const { openCoreDatabase } = await import('../src/infrastructure/core-database');
+  const { ExecutionQueue } = await import('../src/domains/orchestration/queue');
+  const { Scheduler } = await import('../src/domains/orchestration/scheduler');
+  const db = openCoreDatabase(':memory:'), queue = new ExecutionQueue(db);
+  const scheduler = new Scheduler(queue, new Map([['worker', { async execute() { return { kind: 'blocked' as const, reason: 'wait', blockedOn: 'queue:nonexistent' }; }, async cancel() { return true; } }]]));
+  try { const item = scheduler.enqueue({ requestId: 'invalid-blocker', taskId: 'task', source: 'user', destination: 'worker', body: 'test' }); await scheduler.drain(); assert.equal(queue.get(item.id).state, 'failed'); assert.equal(queue.get(item.id).blockedOn, null); }
+  finally { scheduler.stop(); db.close(); }
+});

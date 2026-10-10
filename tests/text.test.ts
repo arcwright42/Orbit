@@ -62,7 +62,7 @@ test('actual Pi harness calls platform tools, consumes results, streams text and
     assert.equal(requests[0].authorization, 'Bearer text-only-key');
     assert.equal(requests[0].body.model, 'test-text');
     assert.ok(requests[1].body.messages.some((m: any) => m.role === 'tool' && m.content.includes('pending')));
-    assert.deepEqual(requests[0].body.tools.map((t: any) => t.function.name).sort(), ['answer_task', 'cancel_task', 'create_team', 'dispatch_task', 'get_task_execution', 'list_tasks', 'list_teams', 'save_request']);
+    assert.deepEqual(requests[0].body.tools.map((t: any) => t.function.name).sort(), ['list_tasks', 'save_request', 'list_teams', 'create_team', 'dispatch_task', 'get_task_execution', 'answer_task', 'cancel_task', 'retry_task', 'accept_task', 'revise_task', 'approve_task_step', 'rotate_task_session', 'search_team_memory', 'list_team_templates', 'get_team_template', 'get_team', 'save_team_template'].sort());
     assert.ok(records.includes('共有一个待派发任务。'));
     assert.ok(events.some(e => e.type === 'delta'));
     workspace.recordInteraction('user', '补充语音：发布目标是桌面客户端。', 'voice');

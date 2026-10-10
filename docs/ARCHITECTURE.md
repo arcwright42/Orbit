@@ -2,7 +2,7 @@
 
 更新日期：2026-10-10。
 
-采用 TypeScript、Electron、React 和 Vite 的模块化单体。前台 Agent 只沟通和调用平台工具，真实工作由后台原生 Codex 会话执行。当前可运行执行／检查两角色流程，不代表已复现完整 OpenRig。
+采用 TypeScript、Electron、React 和 Vite 的模块化单体。前台 Agent 只沟通和调用平台工具，真实工作由后台原生 Codex 会话执行。当前支持模板化团队、配置驱动工作流、审核返工、并行依赖与团队经验；完整对齐范围见 EXECUTION-CORE.md。
 
 ## 领域边界
 
@@ -27,7 +27,7 @@
 
 产品任务保存在 orbit.sqlite，队列、团队、会话和 flow 保存在 execution-core.sqlite。跨库通过稳定标识和可重放投影恢复，不伪装成单事务。启动时未确认退出的执行停放为 runtime:unknown，不能直接重试；用户明确核对旧执行已停止后才解除。
 
-同团队保守串行，全局最多两支团队并发。每个任务隔离工作目录，builder/reviewer 在同一任务目录交换成果。取消等待进程退出；关闭应用等待执行停止与持久化完成。目录隔离并非 OS 安全沙箱，原生 Codex 使用 workspace-write 与 never 审批配置。
+同一稳定席位串行，全局最多四路执行，不同成员可按工作流依赖并行。默认每任务建立目录，也支持指定已有项目目录；团队成员在任务工作区交换成果。取消等待进程退出；关闭应用等待执行停止与持久化完成。目录隔离并非 OS 安全沙箱，原生 Codex 使用 workspace-write 与 never 审批配置。
 
 ## 桌面与模型边界
 
@@ -46,3 +46,5 @@ OpenRig 参考提交为 4b48ca21a9bd072aa05a08b3da6d9c0708e093c5（0.6.9）。�
 History 是应用层持久记录，包含 role、channel、createdAt 和正文。Qwen 完整转写/回复事件与 Pi 回复都写入此记录。Pi 自身工具配对历史单独保存，跨通道资料每轮从共享 History 读取，带角色和时间；运行中的 Qwen 在空闲边界刷新 instructions 中的历史，不主动触发新 response。
 
 原生 SessionManager.inMemory 的 header/entries 由 Orbit 保存进 SQLite，并在后续请求重建；不使用用户 ~/.pi 配置、认证或默认工具。SessionManager 是模型上下文投影依据，所有 compaction entries 与原始消息共存。会话 ID 在当前版本压缩前后保持稳定；平台 Room 轮换及历史检索工具仍是后续用例。
+
+模板目录与版本由 domains/teams/templates 管理，角色与工作流约束由 domains/workflows 管理，经验由 domains/memory/team-knowledge 管理；application/platform-tools 将这些能力统一提供给 Pi 与 Qwen。具体工具契约见 [AGENT-TOOLS](AGENT-TOOLS.md)。

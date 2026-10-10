@@ -7,5 +7,7 @@ import type { ExecutionResult, QueueItem } from '../orchestration/types';
 export interface ExecutionPort {
   execute(item: QueueItem, signal: AbortSignal): Promise<ExecutionResult>;
   /** True only after the runtime confirms execution stopped. May resolve false. */
+  /** Only returns a result with durable exit evidence, never based on inactivity. */
+  reconcile?(item: QueueItem): Promise<ExecutionResult | undefined>;
   cancel(item: QueueItem): Promise<boolean>;
 }

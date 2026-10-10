@@ -20,7 +20,14 @@ function decode(row: Record<string, unknown>): QueueItem {
  * Named sessions are opaque identities, never derived from UI labels or runtime session IDs.
  */
 export class ExecutionQueue {
-  constructor(private db: DatabaseSync) {}
+  private claimable: (item: QueueItem) => boolean = () => true;
+  setClaimGuard(guard: (item: QueueItem) => boolean) { this.claimable = guard; }
+  private projector?: (item: QueueItem, result: ExecutionResult) => void;
+  setProjector(projector: (item: QueueItem, result: ExecutionResult) => void) { this.projector = projector; }
+  constructor(private db: DatabaseSync) {
+    db.exec('CREATE TABLE IF NOT EXISTS queue_pauses (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+    db.exec('CREATE TABLE IF NOT EXISTS queue_wakes (item_id TEXT PRIMARY KEY REFERENCES execution_queue(id), due_at INTEGER NOT NULL, delay_seconds INTEGER NOT NULL, max_seconds INTEGER NOT NULL)');
+  }
 
   get(id: string): QueueItem {
     const row = this.db.prepare('SELECT * FROM execution_queue WHERE id = ?').get(id);
@@ -73,7 +80,7 @@ export class ExecutionQueue {
         (item.state === 'blocked' && (item.blockedOn === 'runtime:unknown' || item.cancelRequested)));
       if (reservations.length >= maxConcurrent) return undefined;
       const busy = new Set(reservations.map(item => lane(item.destination)));
-      const next = this.list().find(item => item.state === 'pending' && destinations.includes(item.destination) && !busy.has(lane(item.destination)));
+      const next = this.list().find(item => item.state === 'pending' && this.claimable(item) && destinations.includes(item.destination) && !busy.has(lane(item.destination)));
       if (!next) return undefined;
       this.db.prepare("UPDATE execution_queue SET state = 'in-progress', generation = ?, blocked_on = NULL, updated_at = ? WHERE id = ?")
         .run(randomUUID(), new Date().toISOString(), next.id);
@@ -84,7 +91,10 @@ export class ExecutionQueue {
 
   /** Stale generations are ignored, including callbacks racing cancellation or recovery. */
   finish(id: string, generation: string, result: ExecutionResult): QueueItem {
-    return transaction(this.db, () => {
+    return transaction(this.db, () => this.finishResult(id, generation, result));
+  }
+
+  private finishResult(id: string, generation: string, result: ExecutionResult): QueueItem {
       const item = this.get(id);
       if (item.generation !== generation || item.state !== 'in-progress') return item;
       if (result.kind === 'handoff') {
@@ -103,11 +113,36 @@ export class ExecutionQueue {
         this.db.prepare('UPDATE execution_queue SET evidence_ref = ? WHERE id = ?').run(evidence, id);
         this.change(item, 'done', item.destination, required(result.summary, 'summary'));
       } else if (result.kind === 'blocked') {
+        if (result.blockedOn.startsWith('queue:')) {
+          const blocker = this.get(result.blockedOn.slice(6));
+          if (blocker.taskId !== item.taskId || blocker.id === item.id) throw new Error('Invalid blocker');
+          let cursor: QueueItem | undefined = blocker;
+          const seen = new Set([item.id]);
+          while (cursor) { if (seen.has(cursor.id)) throw new Error('Blocker cycle'); seen.add(cursor.id); cursor = cursor.blockedOn?.startsWith('queue:') ? this.get(cursor.blockedOn.slice(6)) : undefined; }
+        }
+        if (result.wakeAfterSeconds !== undefined && (!Number.isInteger(result.wakeAfterSeconds) || result.wakeAfterSeconds < 1 || result.wakeAfterSeconds > 86400)) throw new Error('Invalid wake delay');
+        if (result.wakeMaxSeconds !== undefined && (!Number.isInteger(result.wakeMaxSeconds) || result.wakeMaxSeconds < (result.wakeAfterSeconds ?? Infinity) || result.wakeMaxSeconds > 604800)) throw new Error('Invalid wake maximum');
         this.change(item, 'blocked', item.destination, required(result.reason, 'reason'), required(result.blockedOn, 'blockedOn'));
+        if (result.wakeAfterSeconds !== undefined) {
+          const old = this.db.prepare('SELECT delay_seconds FROM queue_wakes WHERE item_id=?').get(id);
+          const max = result.wakeMaxSeconds ?? result.wakeAfterSeconds;
+          const delay = Math.min(max, Math.max(result.wakeAfterSeconds, Number(old?.delay_seconds ?? 0) * 2));
+          this.db.prepare('INSERT OR REPLACE INTO queue_wakes VALUES (?,?,?,?)').run(id, Date.now() + delay * 1000, delay, max);
+        }
       } else {
         this.change(item, result.kind === 'canceled' ? 'canceled' : 'failed', item.destination, required(result.reason, 'reason'));
       }
-      return this.get(id);
+      const finished = this.get(id);
+      this.projector?.(finished, result);
+      return finished;
+  }
+
+  reconcileResult(id: string, generation: string, result: ExecutionResult): QueueItem {
+    return transaction(this.db, () => {
+      const item = this.get(id);
+      if (item.generation !== generation || item.state !== 'blocked' || item.blockedOn !== 'runtime:unknown') return item;
+      this.db.prepare("UPDATE execution_queue SET state='in-progress' WHERE id=?").run(id);
+      return this.finishResult(id, generation, result);
     });
   }
 
@@ -127,7 +162,7 @@ export class ExecutionQueue {
     });
   }
 
-  pickup(id: string, now = Date.now(), thresholdMs = 10 * 60_000): 'unclaimed' | 'working' | 'stalled-after-claim' | 'parked' | 'terminal' {
+  pickup(id: string, now = Date.now(), thresholdMs = 3 * 60_000): 'unclaimed' | 'working' | 'stalled-after-claim' | 'parked' | 'terminal' {
     const item = this.get(id);
     if (item.state === 'pending') return 'unclaimed';
     if (item.state === 'blocked') return 'parked';
@@ -149,7 +184,7 @@ export class ExecutionQueue {
     });
   }
 
-  confirmCancel(id: string, generation: string): QueueItem {
+  confirmCancel(id: string, generation: string | null): QueueItem {
     return transaction(this.db, () => {
       const item = this.get(id);
       if (item.generation === generation && item.cancelRequested && activeStates.includes(item.state)) {
@@ -180,10 +215,58 @@ export class ExecutionQueue {
     });
   }
 
+  /** Event-first blocker wake; durable deadlines survive application restart. Never infer process death from age. */
+  wakeDue(now = Date.now()): number {
+    return transaction(this.db, () => {
+      let count = 0;
+      for (const item of this.list()) {
+        if (item.state !== 'blocked' || item.cancelRequested || item.blockedOn === 'runtime:unknown' || item.blockedOn === 'application:paused') continue;
+        const blocker = item.blockedOn?.startsWith('queue:') ? this.get(item.blockedOn.slice(6)) : undefined;
+        const wake = this.db.prepare('SELECT due_at FROM queue_wakes WHERE item_id=?').get(item.id);
+        if (blocker && !activeStates.includes(blocker.state) || wake && Number(wake.due_at) <= now) {
+          this.db.prepare('UPDATE execution_queue SET generation=NULL WHERE id=?').run(item.id);
+          this.change(item, 'pending', 'scheduler', blocker ? `依赖 ${blocker.id} 已结束：${blocker.state}。重新核对结果。` : '等待期限到达，重新核对条件。');
+          count++;
+        }
+      }
+      return count;
+    });
+  }
+
+  parkPending(id: string, blockedOn: string, reason: string) {
+    return transaction(this.db, () => { const item = this.get(id); if (item.state !== 'pending') throw new Error('Only pending work can be parked'); this.change(item, 'blocked', 'application', reason, blockedOn); return this.get(id); });
+  }
+
+  approveGate(id: string, answer: string) {
+    return transaction(this.db, () => { const item = this.get(id); if (item.state !== 'blocked' || item.blockedOn !== 'human:gate') throw new Error('No human gate'); this.db.prepare('UPDATE execution_queue SET body=? WHERE id=?').run(`${item.body}\n用户审批：${required(answer, 'gate answer')}`, id); this.change(item, 'pending', 'human:user', '用户明确批准执行该步骤'); });
+  }
+
+  pauseStopped(id: string) {
+    return transaction(this.db, () => {
+      const item = this.get(id);
+      if (item.state === 'in-progress' || item.blockedOn === 'runtime:unknown') return;
+      if (!['pending','blocked','canceled'].includes(item.state) || item.blockedOn === 'application:paused') return;
+      this.db.prepare('INSERT OR REPLACE INTO queue_pauses VALUES (?,?)').run(id, JSON.stringify({ state: item.state === 'blocked' ? 'blocked' : 'pending', blockedOn: item.blockedOn, resolution: item.resolution }));
+      this.db.prepare('UPDATE execution_queue SET cancel_requested=0,generation=NULL WHERE id=?').run(id);
+      this.change(item, 'blocked', 'application', '应用已退出，等待用户恢复', 'application:paused');
+    });
+  }
+
+  resumePaused(id: string) {
+    return transaction(this.db, () => {
+      const item = this.get(id); if (item.state !== 'blocked' || item.blockedOn !== 'application:paused') throw new Error('Not paused');
+      const row = this.db.prepare('SELECT payload FROM queue_pauses WHERE item_id=?').get(id);
+      const previous = row ? JSON.parse(String(row.payload)) : { state: 'pending', blockedOn: null };
+      this.change(item, previous.state, 'human:user', previous.resolution ?? '用户恢复任务', previous.state === 'blocked' ? previous.blockedOn : null);
+      this.db.prepare('DELETE FROM queue_pauses WHERE item_id=?').run(id);
+    });
+  }
+
   private change(item: QueueItem, state: QueueState, actor: string, note: string, blockedOn: string | null = null) {
     this.db.prepare('UPDATE execution_queue SET state = ?, blocked_on = ?, resolution = ?, updated_at = ? WHERE id = ?')
       .run(state, blockedOn, note, new Date().toISOString(), item.id);
     this.event(item.id, state, actor, note);
+    if (!activeStates.includes(state)) this.db.prepare('DELETE FROM queue_wakes WHERE item_id=?').run(item.id);
   }
 
   private event(id: string, state: QueueState, actor: string, note: string) {

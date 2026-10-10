@@ -7,6 +7,7 @@
 ## 产品文档
 
 - [产品需求](docs/PRODUCT.md)：产品定位、职责边界、交互流程、团队编排、首版建议和验收场景。
+- [常驻 Agent 工具](docs/AGENT-TOOLS.md)：模板、团队和执行工具边界。
 - [架构与开发进度](docs/ARCHITECTURE.md)：模块边界、OpenRig 对齐点、当前实现与下一步。
 
 ## 本地运行
@@ -37,7 +38,7 @@ npm start
 - 附件通过系统选择器导入副本；派发仅复制所选附件到本任务目录，具体读取能力由执行器决定。
 - OpenRig HTTP 连接设置保留为只读诊断；本机执行不依赖外部 OpenRig daemon。
 
-执行需要已安装并登录 Codex CLI（默认 PATH 或 ~/.local/bin/codex，也可设置 ORBIT_CODEX_BIN）。配置前台模型后可直接发送需求；“保存需求”仍可离线记录，之后从任务详情派发。目前只提供执行／检查两角色模板，完整差异见 [执行机制](docs/EXECUTION-CORE.md)。
+执行需要已安装并登录 Codex CLI（默认 PATH 或 ~/.local/bin/codex，也可设置 ORBIT_CODEX_BIN）。配置前台模型后可直接发送需求；“保存需求”仍可离线记录，之后从任务详情派发。当前提供执行／检查、并行调研模板，支持自定义角色与流程，完整差异见 [执行机制](docs/EXECUTION-CORE.md)。
 
 数据使用 SQLite，默认位于 Electron 的 Orbit 用户数据目录（macOS 通常为 `~/Library/Application Support/Orbit`），附件保存在同目录。可通过 `ORBIT_DATA_DIR` 指定隔离目录。关闭窗口后保留应用；通过应用菜单或 `⌘Q` 退出。
 

@@ -28,7 +28,7 @@ export interface QueueEvent { seq: number; itemId: string; state: QueueState; ac
 export type ExecutionResult =
   | { kind: 'question'; question: string }
   | { kind: 'completed'; summary: string; evidenceRef: string }
-  | { kind: 'blocked'; reason: string; blockedOn: string }
+  | { kind: 'blocked'; reason: string; blockedOn: string; wakeAfterSeconds?: number; wakeMaxSeconds?: number }
   | { kind: 'failed'; reason: string }
   | { kind: 'canceled'; reason: string }
   | { kind: 'handoff'; destination: string; body: string; reason: string };

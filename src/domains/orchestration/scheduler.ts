@@ -1,6 +1,6 @@
 import type { ExecutionPort } from '../runtime/execution-port';
 import { ExecutionQueue } from './queue';
-import type { EnqueueInput, QueueItem } from './types';
+import type { EnqueueInput, QueueItem, ExecutionResult } from './types';
 
 /** Explicit lifecycle: enqueue/tick starts work; no timer or Electron dependency.
  * Each registered destination has a single lane, with a global concurrency bound.
@@ -30,14 +30,19 @@ export class Scheduler {
       const controller = new AbortController();
       const port = this.agents.get(item.destination)!;
       const settled = Promise.resolve().then(async () => {
-        try {
-          const result = await port.execute(item, controller.signal);
-          // A returned result is adapter proof this execution attempt has settled.
-          this.queue.finish(item.id, item.generation!, result);
-        } catch (error) {
-          // A thrown transport error does not prove the remote process stopped.
+        let result: ExecutionResult;
+        try { result = await port.execute(item, controller.signal); }
+        catch (error) {
+          // Transport exceptions do not prove that the process stopped.
           this.queue.finish(item.id, item.generation!, { kind: 'blocked', blockedOn: 'runtime:unknown',
             reason: error instanceof Error ? error.message || 'Runtime failed without a result.' : 'Runtime failed without a result.' });
+          return;
+        }
+        try { this.queue.finish(item.id, item.generation!, result); }
+        catch (error) {
+          // The adapter returned after exit, but its routing/blocker result was invalid.
+          // Do not turn a rejected record into a fictitious live process reservation.
+          this.queue.finish(item.id, item.generation!, { kind: 'failed', reason: `执行回执被拒绝：${error instanceof Error ? error.message : 'invalid result'}` });
         }
       }).catch(error => { this.errors.push(error instanceof Error ? error.message : String(error)); })
         .finally(() => {
@@ -50,7 +55,7 @@ export class Scheduler {
 
   async cancel(id: string, actor: string): Promise<QueueItem> {
     const item = this.queue.requestCancel(id, actor);
-    if (!item.cancelRequested || !['in-progress', 'blocked'].includes(item.state) || !item.generation) return item;
+    if (!item.cancelRequested || !['in-progress', 'blocked'].includes(item.state)) return item;
     if (item.state === 'blocked' && item.blockedOn !== 'runtime:unknown' && !this.runs.has(id)) { this.queue.confirmCancel(id, item.generation); this.tick(); return this.queue.get(id); }
     const port = this.agents.get(item.destination);
     if (!port) return item;

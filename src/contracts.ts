@@ -57,9 +57,13 @@ export interface OrbitApi {
   stopText(): Promise<void>;
   onChat(listener: (event: ChatEvent) => void): () => void;
   chatText(text: string, attachmentIds: string[]): Promise<void>;
+  teamTemplates(): Promise<{ id: string; name: string; description: string; revision: number }[]>;
   localTeams(): Promise<LocalTeamInfo[]>;
-  createTeam(name: string): Promise<LocalTeamInfo>;
-  dispatchTask(taskId: string, teamId: string): Promise<Workspace>;
+  createTeam(name: string, config?: unknown, templateId?: string): Promise<LocalTeamInfo>;
+  dispatchTask(taskId: string, teamId: string, directory?: string): Promise<Workspace>;
+  pickWorkspaceDirectory(): Promise<string | undefined>;
+  approveTaskStep(taskId: string, answer: string, itemId?: string): Promise<Workspace>;
+  rotateTaskSession(taskId: string, itemId?: string): Promise<Workspace>;
   execution(taskId: string): Promise<TaskExecution | null>;
   answerTask(taskId: string, answer: string): Promise<Workspace>;
   reconcileTask(taskId: string): Promise<Workspace>;
@@ -91,7 +95,7 @@ export type VoiceEvent =
 
 export interface LocalTeamInfo { id: string; name: string; workspace: string; contextPack?: string; seats: { name: string; role: string; sessionId: string; nativeId: string | null }[] }
 export interface TaskExecution {
-  teamId: string; phase: 'builder' | 'reviewer'; question?: string; summary?: string; artifacts: string[];
+  teamId: string; phase: string; workspace?: string; steps?: { id: string; itemId: string; role: string; state: string; blockedOn?: string }[]; question?: string; summary?: string; artifacts: string[];
   state: string; blockedOn?: string; pickup: string; events: { seq: number; state: string; note: string; at: string }[];
 }
 

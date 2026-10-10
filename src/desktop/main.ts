@@ -1,13 +1,13 @@
+import { platformTools } from '../application/platform-tools';
 import { contextPolicy, estimateTokens, historyContext } from '../domains/conversation/context-budget';
 import { foregroundPrompt, foregroundTools } from '../domains/conversation/tools';
 import { TextModelStore } from '../domains/models/settings';
 import { TextAgent } from '../domains/conversation/text-agent';
-import type { PlatformExecute } from '../domains/conversation/tools';
 import type { TextModelInput, ChatEvent } from '../contracts';
 import { importContextPack, loadContextPack, assembleContextPack, composeContextPack } from '../domains/context';
 import { TaskExecutionService } from '../application/task-execution';
 import { loadEnvFile } from 'node:process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { RealtimeVoice } from '../domains/voice/realtime';
 import { WakeDetector } from '../domains/voice/wake';
 import type { VoiceEvent } from '../contracts';
@@ -43,8 +43,8 @@ app.whenReady().then(() => {
     if (!directory) return '';
     const pack = loadContextPack(directory);
     if (!pack.manifest.atoms.length) return assembleContextPack(pack).text;
-    const composition = composeContextPack(pack, { situation: item.source === 'foreground' ? 'fresh' : 'handover', runtime: 'codex', budgetTokens: 16000,
-      roots: { project: seat.workspace, mission: join(seat.workspace, '.orbit', item.taskId), seat: join(seat.workspace, '.orbit', 'seats', seat.sessionId) } });
+    const composition = composeContextPack(pack, { situation: seat.nativeId ? 'handover' : item.source === 'foreground' ? 'fresh' : 'handover', runtime: 'codex', budgetTokens: 16000,
+      roots: { project: seat.workspace, mission: join(seat.workspace, '.orbit', item.taskId), seat: execution.teams.seatRoot(seat) } });
     if (composition.budget) throw new Error(`上下文包超出预算 ${composition.budget.overageTokens} tokens，请调整包后重试。`);
     return composition.pieces.map(piece => `[${piece.source}:${piece.address}; ${piece.taxonomy}]\n${piece.text}`).join('\n\n');
   });
@@ -59,24 +59,7 @@ app.whenReady().then(() => {
     });
   };
   const emitVoice = (event: VoiceEvent) => { if (event.type === 'transcript') { workspace.recordInteraction(event.role, event.text, 'voice'); window?.webContents.send('workspace:changed'); } if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
-  const executePlatform: PlatformExecute = async (name, args, callId) => {
-    if (name === 'list_tasks') return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
-    if (name === 'save_request' && args && typeof args === 'object' && 'text' in args && typeof args.text === 'string') {
-      const requestId = createHash('sha256').update(callId).digest('hex');
-      const snapshot = workspace.submit({ requestId, text: args.text, attachmentIds: 'attachmentIds' in args ? args.attachmentIds : [] });
-      window?.webContents.send('workspace:changed');
-      return { task: snapshot.tasks.find(task => task.requestId === requestId), executed: false };
-    }
-    const input = args as Record<string, unknown>;
-    if (name === 'list_teams') return execution.teams.list();
-    if (!input || typeof input !== 'object') throw new Error('Invalid tool arguments');
-    if (name === 'create_team') return execution.createTeam(string(input.name));
-    if (name === 'dispatch_task') { await execution.dispatch(string(input.taskId), string(input.teamId)); return execution.detail(string(input.taskId)); }
-    if (name === 'get_task_execution') return execution.detail(string(input.taskId));
-    if (name === 'answer_task') { execution.answer(string(input.taskId), string(input.answer)); return execution.detail(string(input.taskId)); }
-    if (name === 'cancel_task') { await execution.cancel(string(input.taskId)); return workspace.snapshot().tasks.find(task => task.id === input.taskId); }
-    throw new Error('Unsupported tool');
-  };
+  const executePlatform = platformTools(workspace, execution, () => window?.webContents.send('workspace:changed'));
   const history = () => historyContext(workspace.snapshot().messages,
     contextPolicy.voiceHistoryTokens - estimateTokens({ instructions: foregroundPrompt, tools: foregroundTools }));
   const voice = new RealtimeVoice(emitVoice, executePlatform, undefined, history);
@@ -134,9 +117,14 @@ app.whenReady().then(() => {
     execution.teams.contextPack(team.id, pack.directory);
     window?.webContents.send('workspace:changed');
   });
+  handle('templates:list', () => execution.templates.list());
+  handle('templates:get', id => execution.templates.get(string(id)));
   handle('teams:list', () => execution.teams.list());
-  handle('teams:create', name => execution.createTeam(string(name)));
-  handle('execution:dispatch', async (taskId, teamId) => { await execution.dispatch(string(taskId), string(teamId)); return workspace.snapshot(); });
+  handle('teams:create', (name, config, templateId) => execution.createTeam(string(name), config, templateId === undefined ? undefined : string(templateId)));
+  handle('workspace:pick-directory', async () => { const choice = await dialog.showOpenDialog(window!, { title: '选择已有项目目录', properties: ['openDirectory'] }); return choice.canceled ? undefined : choice.filePaths[0]; });
+  handle('execution:approve', (taskId, answer, itemId) => { execution.approve(string(taskId), string(answer), itemId === undefined ? undefined : string(itemId)); return workspace.snapshot(); });
+  handle('execution:rotate', (taskId, itemId) => { execution.rotateSession(string(taskId), itemId === undefined ? undefined : string(itemId)); return workspace.snapshot(); });
+  handle('execution:dispatch', async (taskId, teamId, directory) => { await execution.dispatch(string(taskId), string(teamId), directory === undefined ? undefined : string(directory)); return workspace.snapshot(); });
   handle('execution:detail', taskId => execution.detail(string(taskId)));
   handle('execution:answer', (taskId, answer) => { execution.answer(string(taskId), string(answer)); return workspace.snapshot(); });
   handle('execution:reconcile', taskId => { execution.reconcileStopped(string(taskId)); return workspace.snapshot(); });

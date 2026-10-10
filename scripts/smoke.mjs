@@ -38,7 +38,15 @@ try {
   await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
   const restored = await page.evaluate(() => window.orbit.workspace());
   assert.deepEqual(restored, initial);
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '切换侧栏' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: /团队/ }).click();
+  await page.getByLabel('新团队名称').fill('并行调研测试');
+  await page.getByLabel('团队模板').selectOption('parallel-research');
+  await page.getByRole('button', { name: '创建团队', exact: true }).click();
+  await page.getByText('资料调研 · 方案分析 · 汇总', { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.orbit.localTeams()))[0].seats.length, 3);
+  await page.screenshot({ path: 'artifacts/orbit-team-templates.png' });
+  await page.getByRole('button', { name: '设置', exact: true }).first().click();
   await page.getByLabel('服务地址').fill('http://127.0.0.1:1');
   await page.getByRole('button', { name: '保存并检查' }).click();
   await page.getByRole('status').getByText(/尚未连接/).waitFor();
