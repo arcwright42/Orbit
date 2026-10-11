@@ -1,28 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { OrbitApi, VoiceEvent, ChatEvent } from '../contracts';
+import type { OrbitApi, VoiceEvent } from '../contracts';
 
 const api: OrbitApi = {
-  textModel: () => ipcRenderer.invoke('model:read'),
-  saveTextModel: input => ipcRenderer.invoke('model:save', input),
-  stopText: () => ipcRenderer.invoke('chat:stop'),
-  onChat: listener => { const handler = (_event: unknown, data: ChatEvent) => listener(data); ipcRenderer.on('chat:event', handler); return () => ipcRenderer.removeListener('chat:event', handler); },
-  chatText: (text, ids) => ipcRenderer.invoke('chat:text', text, ids),
-  teamTemplates: () => ipcRenderer.invoke('templates:list'),
-  localTeams: () => ipcRenderer.invoke('teams:list'),
-  createTeam: (name, config, templateId) => ipcRenderer.invoke('teams:create', name, config, templateId),
-  dispatchTask: (taskId, teamId, directory) => ipcRenderer.invoke('execution:dispatch', taskId, teamId, directory),
-  pickWorkspaceDirectory: () => ipcRenderer.invoke('workspace:pick-directory'),
-  approveTaskStep: (taskId, answer, itemId) => ipcRenderer.invoke('execution:approve', taskId, answer, itemId),
-  rotateTaskSession: (taskId, itemId) => ipcRenderer.invoke('execution:rotate', taskId, itemId),
-  execution: taskId => ipcRenderer.invoke('execution:detail', taskId),
-  answerTask: (taskId, answer) => ipcRenderer.invoke('execution:answer', taskId, answer),
-  reconcileTask: taskId => ipcRenderer.invoke('execution:reconcile', taskId),
-  retryTask: taskId => ipcRenderer.invoke('execution:retry', taskId),
-  acceptTask: taskId => ipcRenderer.invoke('execution:accept', taskId),
-  reviseTask: (taskId, feedback) => ipcRenderer.invoke('execution:revise', taskId, feedback),
-  openResult: (taskId, index) => ipcRenderer.invoke('execution:open', taskId, index),
-  importContextPack: teamId => ipcRenderer.invoke('context:import', teamId),
-  onWorkspace: listener => { const handler = () => listener(); ipcRenderer.on('workspace:changed', handler); return () => ipcRenderer.removeListener('workspace:changed', handler); },
   voiceStart: wake => ipcRenderer.invoke('voice:start', wake),
   voiceStop: () => ipcRenderer.invoke('voice:stop'),
   voiceAudio: data => ipcRenderer.invoke('voice:audio', data),
