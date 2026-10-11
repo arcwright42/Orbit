@@ -35,18 +35,7 @@ export interface Workspace {
   messages: Message[];
   tasks: Task[];
   attachments: Attachment[];
-  settings: { openrigUrl: string };
 }
-
-export interface Team {
-  id: string;
-  name: string;
-  lifecycle: string;
-}
-
-export type ConnectionResult =
-  | { state: 'connected'; checkedAt: string; teams: Team[] }
-  | { state: 'unavailable'; checkedAt: string; reason: string };
 
 export interface OrbitApi {
   voiceStart(wake: boolean): Promise<void>;
@@ -58,8 +47,6 @@ export interface OrbitApi {
   cancelTask(id: string): Promise<Workspace>;
   pickAttachments(): Promise<Attachment[]>;
   openAttachment(id: string): Promise<void>;
-  saveConnection(url: string): Promise<Workspace>;
-  checkConnection(): Promise<ConnectionResult>;
 }
 
 export type VoiceEvent =

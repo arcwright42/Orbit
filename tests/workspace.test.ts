@@ -47,7 +47,7 @@ test('invalid attachment rolls back the entire intake; independent task cancella
   } finally { f.cleanup(); }
 });
 
-test('attachments are copied, records and settings survive restart', async () => {
+test('attachments are copied and workspace records survive restart', async () => {
   const f = fixture();
   try {
     const original = join(f.directory, 'brief.md');
@@ -56,7 +56,6 @@ test('attachments are copied, records and settings survive restart', async () =>
     writeFileSync(original, 'changed');
     assert.equal(readFileSync(f.materials.require(file.id).path, 'utf8'), '# user brief');
     f.service.submit({ requestId: 'request-file', text: '请查看资料', attachmentIds: [file.id] });
-    f.service.saveConnection('http://127.0.0.1:7444');
     const anotherDb = openDatabase(f.path);
     try {
       const restarted = new WorkspaceService(anotherDb, new MaterialLibrary(anotherDb, join(f.directory, 'attachments')));

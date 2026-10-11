@@ -68,8 +68,6 @@ app.whenReady().then(() => {
   handle('workspace:read', () => workspace.snapshot());
   handle('workspace:submit', input => workspace.submit(input));
   handle('task:cancel', id => workspace.cancelTask(id));
-  handle('connection:save', url => workspace.saveConnection(url));
-  handle('connection:check', () => workspace.checkConnection());
   handle('materials:pick', async () => {
     const result = await dialog.showOpenDialog(window!, {
       properties: ['openFile'], title: '添加资料 · 单个文件最多 25 MB',
