@@ -39,12 +39,11 @@ try {
   const restored = await page.evaluate(() => window.orbit.workspace());
   assert.deepEqual(restored, initial);
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByLabel('服务地址').fill('http://127.0.0.1:1');
-  await page.getByRole('button', { name: '保存并检查' }).click();
-  await page.getByRole('status').getByText(/尚未连接/).waitFor();
+  await page.getByRole('heading', { name: '语音交互' }).waitFor();
+  await page.getByRole('button', { name: '开启语音唤醒' }).waitFor();
   await page.screenshot({ path: 'artifacts/orbit-settings.png' });
   assert.deepEqual(errors, []);
-  console.log('Desktop smoke passed: intake, task cancellation, restart persistence, unavailable connection; no renderer errors.');
+  console.log('Desktop smoke passed: intake, task cancellation, restart persistence, voice settings; no renderer errors.');
 } finally {
   if (app) await app.close();
   await rm(directory, { recursive: true, force: true });

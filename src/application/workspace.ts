@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { Message, Task, Workspace, ConnectionResult } from '../contracts';
+import type { Message, Task, Workspace } from '../contracts';
 import { transaction } from '../infrastructure/database';
 import { TaskRepository } from '../domains/tasks/repository';
 import { validateRequest } from '../domains/tasks/task';
 import { intakeReceipt } from '../domains/conversation/intake';
 import { MaterialLibrary } from '../domains/materials/library';
-import { normalizeOpenRigUrl, OpenRigCatalog } from '../domains/runtime/openrig';
 
 export class WorkspaceService {
   private tasks: TaskRepository;
@@ -15,12 +14,10 @@ export class WorkspaceService {
   }
 
   snapshot(): Workspace {
-    const setting = this.db.prepare('SELECT value FROM settings WHERE key = ?').get('openrigUrl');
     return {
       tasks: this.tasks.list(), attachments: this.materials.list(),
       messages: this.db.prepare('SELECT payload FROM messages ORDER BY rowid').all()
         .map(row => JSON.parse(String(row.payload)) as Message),
-      settings: { openrigUrl: setting ? String(setting.value) : 'http://127.0.0.1:7433' },
     };
   }
 
@@ -55,21 +52,5 @@ export class WorkspaceService {
     if (typeof id !== 'string') throw new Error('任务标识无效。');
     this.tasks.cancel(id);
     return this.snapshot();
-  }
-
-  saveConnection(value: unknown): Workspace {
-    const url = normalizeOpenRigUrl(value);
-    this.db.prepare('INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('openrigUrl', url);
-    return this.snapshot();
-  }
-
-  async checkConnection(): Promise<ConnectionResult> {
-    const checkedAt = new Date().toISOString();
-    try {
-      const teams = await new OpenRigCatalog(this.snapshot().settings.openrigUrl).listTeams();
-      return { state: 'connected', checkedAt, teams };
-    } catch (error) {
-      return { state: 'unavailable', checkedAt, reason: error instanceof Error ? error.message : '连接失败。' };
-    }
   }
 }

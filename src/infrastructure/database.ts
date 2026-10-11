@@ -20,7 +20,6 @@ export function openDatabase(path: string): DatabaseSync {
     CREATE TABLE IF NOT EXISTS attachments (
       id TEXT PRIMARY KEY, payload TEXT NOT NULL, stored_path TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     PRAGMA user_version = 1;
   `);
   return db;
