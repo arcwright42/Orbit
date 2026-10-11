@@ -7,35 +7,23 @@ import { validateRequest } from '../domains/tasks/task';
 import { intakeReceipt } from '../domains/conversation/intake';
 import { MaterialLibrary } from '../domains/materials/library';
 import { normalizeOpenRigUrl, OpenRigCatalog } from '../domains/runtime/openrig';
-import { ConversationHistory } from '../domains/conversation/history';
 
 export class WorkspaceService {
   private tasks: TaskRepository;
-  readonly history: ConversationHistory;
   constructor(private db: DatabaseSync, readonly materials: MaterialLibrary) {
     this.tasks = new TaskRepository(db);
-    db.exec('CREATE TABLE IF NOT EXISTS interactions (id TEXT PRIMARY KEY,payload TEXT NOT NULL)');
-    this.history = new ConversationHistory(db);
   }
 
   snapshot(): Workspace {
     const setting = this.db.prepare('SELECT value FROM settings WHERE key = ?').get('openrigUrl');
     return {
       tasks: this.tasks.list(), attachments: this.materials.list(),
-      messages: [...this.db.prepare('SELECT payload FROM messages ORDER BY rowid').all(), ...this.db.prepare('SELECT payload FROM interactions ORDER BY rowid').all()]
-        .map(row => JSON.parse(String(row.payload)) as Message).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      messages: this.db.prepare('SELECT payload FROM messages ORDER BY rowid').all()
+        .map(row => JSON.parse(String(row.payload)) as Message),
       settings: { openrigUrl: setting ? String(setting.value) : 'http://127.0.0.1:7433' },
     };
   }
 
-  recordInteraction(role: 'user' | 'assistant', text: string, channel: Message['channel'] = 'platform', sessionId?: string) {
-    if (!text.trim()) return;
-    const message: Message = { id: randomUUID(), role, channel, text, createdAt: new Date().toISOString() };
-    transaction(this.db, () => {
-      this.db.prepare('INSERT INTO interactions VALUES (?,?)').run(message.id, JSON.stringify(message));
-      this.history.append(message,sessionId);
-    });
-  }
   submit(value: unknown): Workspace {
     const input = validateRequest(value);
     transaction(this.db, () => {
@@ -58,7 +46,6 @@ export class WorkspaceService {
       const receipt = intakeReceipt(task, randomUUID());
       for (const message of [user, receipt]) {
         this.db.prepare('INSERT INTO messages VALUES (?, ?, ?)').run(message.id, task.id, JSON.stringify(message));
-        this.history.append(message);
       }
     });
     return this.snapshot();

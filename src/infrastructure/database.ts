@@ -26,18 +26,14 @@ export function openDatabase(path: string): DatabaseSync {
   return db;
 }
 
-let savepointSequence = 0;
-/** Domain operations can join an outer workflow transaction without committing it. */
 export function transaction<T>(db: DatabaseSync, work: () => T): T {
-  const savepoint = db.isTransaction ? `orbit_${++savepointSequence}` : undefined;
-  db.exec(savepoint ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+  db.exec('BEGIN IMMEDIATE');
   try {
     const result = work();
-    db.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
+    db.exec('COMMIT');
     return result;
   } catch (error) {
-    if (savepoint) { db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`); db.exec(`RELEASE SAVEPOINT ${savepoint}`); }
-    else db.exec('ROLLBACK');
+    db.exec('ROLLBACK');
     throw error;
   }
 }
