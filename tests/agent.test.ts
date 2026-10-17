@@ -78,9 +78,12 @@ test('abort and provider failures settle; unsupported execution tools never reac
     assert.ok(JSON.stringify(f.server.requests.at(-1)).includes('not found'));
     await f.agent.send(f.business.prepare({ requestId: 'recovery-request', text: '你好', attachmentIds: [] }));
     assert.equal(f.agent.read().error, undefined);
+    const beforeEarlyAbort = f.agent.read().messages;
     const early = f.agent.send(f.business.prepare({ requestId: 'early-abort-request', text: '慢回复', attachmentIds: [] }));
-    await f.agent.abort(); await early;
+    const rejected = assert.rejects(early, /输入尚未发送/);
+    await f.agent.abort(); await rejected;
     assert.equal(f.agent.read().status, 'idle');
+    assert.deepEqual(f.agent.read().messages, beforeEarlyAbort);
   } finally { await f.cleanup(); }
 });
 

@@ -2,7 +2,7 @@
 
 更新日期：2026-10-17。
 
-本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK 接入改动；历史业务链路 HTML 的基线另见文档索引。
+本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK 与 PR1 模型配置后端；历史业务链路 HTML 的基线另见文档索引。
 
 仓库目前只有一个 npm 包：根目录 [package.json](../package.json) 定义的 `orbit-desktop`。`src/` 下的目录是这个包内部的逻辑模块，尚未拆成独立发布的 workspace packages。
 
@@ -21,9 +21,11 @@ Orbit/
 │   │   ├── conversation/     Agent 运行接口、业务工具契约、需求回执
 │   │   ├── tasks/            需求校验、任务存取与取消规则
 │   │   ├── materials/        附件导入、副本与元信息
+│   │   ├── models/           模型配置契约、provider 注册与验证
 │   │   └── voice/            Qwen 实时语音、本地唤醒检测
 │   └── infrastructure/
 │       ├── database.ts       SQLite 建表、版本检查、事务
+│       ├── models/           配置文件、系统密钥保护、Codex 只读凭据
 │       └── pi/               Pi SDK 适配、会话与子进程通信
 ├── public/                   浏览器侧静态资源，目前为音频采集 worklet
 ├── assets/voice/             本地唤醒词、模型资源与许可说明
@@ -66,9 +68,9 @@ Orbit/
 
 | 文件 | 运行位置 | 具体负责什么 |
 | --- | --- | --- |
-| [main.ts](../src/desktop/main.ts) | Electron 主进程 | 应用装配入口：读取 `.env`、确定数据目录、打开数据库、创建资料 / 工作空间 / 交互服务和 `PiAgentHost`；启动窗口与菜单，校验 IPC 来源，处理文件选择和打开、麦克风权限、语音与唤醒切换；通过 `utilityProcess.fork` 启动 Pi worker，退出时关闭 Agent 和数据库。语音工具到业务服务的映射也在这里。 |
-| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，把方法映射为 IPC 请求，把对话 / 语音事件映射为订阅，并提供取消订阅函数。与 `contracts.ts` 一起构成界面访问应用能力的边界。 |
-| [agent-worker.ts](../src/desktop/agent-worker.ts) | 独立 Agent 子进程 | 接收 `init / read / send / abort / close` 命令，创建并调用 `PiSession`，回传状态和响应。把模型业务工具调用转交主进程并等待结果，处理超时、停止和断开；支持 Electron `parentPort`，也支持测试使用的 Node IPC。 |
+| [main.ts](../src/desktop/main.ts) | Electron 主进程 | 应用装配入口：读取 `.env`、确定数据目录、打开数据库、创建资料 / 工作空间 / 交互 / 模型配置服务和 `PiAgentHost`；注入 `safeStorage`、配置仓储与 Codex 凭据，校验 IPC 来源；启动窗口与菜单，处理文件选择、麦克风权限、语音与唤醒；通过 `utilityProcess.fork` 启动 Pi worker，退出时关闭 Agent 和数据库。 |
+| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，包含 `models` 配置 API；方法映射为 IPC 请求，对话 / 模型配置 / 语音事件映射为订阅，并提供取消订阅函数。不返回密钥。 |
+| [agent-worker.ts](../src/desktop/agent-worker.ts) | 独立 Agent 子进程 | 接收会话、配置切换、模型目录和连接测试命令，调用 `PiSession` 或模型运行时，回传状态和响应。业务工具和凭据读取经内部 RPC 转给主进程；支持 Electron `parentPort`，也支持测试使用的 Node IPC。 |
 
 ### 2.4 业务用例：`src/application/`
 
@@ -78,6 +80,7 @@ Orbit/
 | --- | --- | --- |
 | [interaction.ts](../src/application/interaction.ts) | `INTERACTION_PROMPT`、`INTERACTION_TOOLS`、`InteractionService` | 定义常驻交互 Agent 的身份、职责和 `list_tasks / save_request` 工具参数。`prepare` 校验输入并解析附件元信息；`execute` 分派业务工具，限制可关联的附件，用会话 ID 和轮次请求 ID 生成稳定去重键，再调用 `WorkspaceService`。这里不导入 Pi SDK。 |
 | [workspace.ts](../src/application/workspace.ts) | `WorkspaceService` | `snapshot` 汇总任务、附件和业务消息；`submit` 支持手动 / 语音保存；`saveRequest` 在事务中校验附件、去重、创建待派发任务并写系统回执；`cancelTask` 调用任务取消规则。Agent 保存只写业务回执，直接保存还写用户输入消息。 |
+| [models.ts](../src/application/models.ts) | `ModelConfigurationService` | 读取 / 保存 / 删除多套模型配置，激活和测试；控制环境兼容优先级、回复中的变更限制、运行时切换及保存失败回滚。对外生成无凭据视图，对 worker 按需解析凭据。通过内部端口使用存储和运行时，不导入 Electron / Pi。 |
 
 ### 2.5 对话契约与回执：`src/domains/conversation/`
 
@@ -115,11 +118,22 @@ Orbit/
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
 | [database.ts](../src/infrastructure/database.ts) | `openDatabase`、`transaction` | 使用 `node:sqlite` 打开数据库，检查 `user_version`，建立任务、消息和附件表，配置 WAL / 外键 / 等待超时；提供 `BEGIN IMMEDIATE` 事务及回滚。当前建表与版本逻辑都集中在本文件。 |
-| [pi/protocol.ts](../src/infrastructure/pi/protocol.ts) | `AgentSetup`、`AgentCommand`、`ParentMessage`、`WorkerMessage`、`AgentProcess` | 定义主进程与 Agent 子进程的初始化参数、命令、状态、响应和工具消息格式，以及可替换的进程传输接口。供 host、worker 和进程测试共同使用。 |
-| [pi/host.ts](../src/infrastructure/pi/host.ts) | `PiAgentHost` | 在主进程中实现 `AgentRuntime`：延迟启动子进程、关联请求与响应、缓存状态、处理超时和崩溃、恢复访问、停止与关闭。校验工具调用属于当前轮次后，交给注入的 Orbit 业务回调。本文件不加载 Pi SDK。 |
-| [pi/session.ts](../src/infrastructure/pi/session.ts) | `PiSession` | 在子进程中实际接入官方 Pi SDK：模型与内存凭据配置、资源和工具白名单、会话创建 / 恢复、流式事件转为 Orbit 状态、停止与错误处理。使用 Pi JSONL 和自定义轮次条目保留上下文、关联附件和避免重放；附件只拼入元信息。 |
+| [models/store.ts](../src/infrastructure/models/store.ts) | `FileModelRepository`、`protectedSecrets` | 校验 / 原子读写版本化 `models.json`，保护已有损坏文件；包装主进程注入的 Electron `safeStorage` 加解密，拒绝无系统保护的明文降级。 |
+| [models/codex.ts](../src/infrastructure/models/codex.ts) | `LocalCodexCredentials` | 只读指定 `CODEX_HOME` 下的 `auth.json`，检查大小、ChatGPT 登录格式、account claim 与有效期。提供无 token 的检测状态，调用时返回 access token；不导入 refresh token、不登录 / 刷新 / 回写。 |
+| [models/environment.ts](../src/infrastructure/models/environment.ts) | `environmentProfile` | 将旧 `ORBIT_AGENT_*` 配置投影为只读模型配置；仅在从未保存配置文件时生效。 |
+| [pi/protocol.ts](../src/infrastructure/pi/protocol.ts) | `AgentSetup`、`AgentCommand`、`AgentResponse`、`ParentMessage`、`WorkerMessage`、`AgentProcess` | 定义主进程与 worker 的初始化、会话、配置切换 / 目录 / 测试、工具调用及内部凭据 RPC。内部凭据消息不进入 renderer IPC。 |
+| [pi/host.ts](../src/infrastructure/pi/host.ts) | `PiAgentHost` | 实现 `AgentRuntime` 与 `ModelRuntimePort`：延迟启动、请求关联、缓存状态、超时和崩溃恢复、停止关闭；控制发送 / 模型操作互斥，校验工具轮次与凭据配置 ID 后调用主进程服务。本文件不加载 Pi SDK。 |
+| [pi/models.ts](../src/infrastructure/pi/models.ts) | `modelCatalog`、`createModelRuntime`、`testModelConnection`、`modelFailure` | 使用 Pi 内置目录与协议，创建隔离的内存运行时、按需凭据解析、自定义端点与 OpenRouter 适配；单次无工具连接测试，统一对外错误。不注册 Codex OAuth 刷新能力。 |
+| [pi/session.ts](../src/infrastructure/pi/session.ts) | `PiSession` | Pi 会话创建 / 恢复、资源和工具白名单、流式事件投影、停止和错误处理；空闲时切换模型并复用 `SessionManager`，发送前重新校验凭据。Pi JSONL 与自定义轮次条目保留上下文、附件关联和去重；附件只拼入元信息。 |
 
 Pi 的调用循环、模型协议、上下文管理和会话能力来自安装的 SDK。Orbit 自己维护业务工具、任务状态、桌面桥接和适配层；仓库中没有复制的 Pi `coding-agent` 源码目录。
+
+### 2.10 模型配置领域：`src/domains/models/`
+
+| 文件 | 主要定义 | 具体负责什么 |
+| --- | --- | --- |
+| [model.ts](../src/domains/models/model.ts) | `ModelProfile`、`ModelsApi`、`ModelConfigurationState` 和内部端口 | 定义 API / Codex 来源、配置视图、目录、检测和连接结果；对外写入参数与内部存储 / 凭据分开。声明配置仓储、密钥保护、Codex 读取与模型运行时端口。 |
+| [providers.ts](../src/domains/models/providers.ts) | `PROVIDERS`、`providerDefinition`、`validateProfile`、`modelUnavailableReason` | 注册 provider、协议、凭据类型和端点能力；校验可保存字段；维护已确认的 Codex 订阅模型退役策略，供目录和激活流程共用，同时允许旧配置读取 / 编辑。 |
 
 ## 3. 主要调用链
 
@@ -171,6 +185,12 @@ flowchart LR
 
 语音没有经过 `PiSession` 或 `InteractionService.execute`。文字与语音共享任务和附件库，语音保存入口当前仅传文字、不附带附件，转写保留在当前页面内存。
 
+### 3.4 模型配置与凭据
+
+`window.orbit.models → models:* IPC → ModelConfigurationService`，由应用服务调用配置仓储和模型运行时端口。激活时 `PiAgentHost → worker → PiSession.configure` 重建模型适配，保留同一个 Pi 会话；连接测试直接调用 `testModelConnection`，不创建会话或业务工具。
+
+worker 需要凭据时走 `credential → host → ModelConfigurationService.credential`，由主进程解密 API key 或只读 Codex 登录，再通过内部响应返回。renderer 只收到配置视图和安全错误。支持范围、选择优先级和 PR2 接口见 [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md)。
+
 ## 4. 状态与数据放在哪里
 
 默认根目录是 Electron 的 Orbit `userData`；可通过 `ORBIT_DATA_DIR` 覆盖。具体创建位置见 [main.ts](../src/desktop/main.ts)。
@@ -184,7 +204,9 @@ flowchart LR
 | Pi 模型消息、工具结果、会话树和压缩记录 | `<userData>/agent/sessions/` 下的原生 JSONL | `PiSession` 使用 Pi `SessionManager` 管理。 |
 | Orbit 文字轮次 ID、输入、附件关联和结束状态 | 同一 Pi 会话中的 `orbit.interaction-turn.v1` 自定义条目 | `PiSession`；重启时把未正常结束的轮次标为中断。 |
 | 当前流式草稿、页面选择、语音转写和播放队列 | 进程 / 页面内存 | `PiSession`、`PiAgentHost`、`App`、`useVoice` 各自持有对应状态。 |
-| 模型凭据 | 本机环境变量 / `.env`，读取后保存在进程内 | 主进程加载环境，Pi worker 和语音模块使用；不发送到界面。 |
+| 模型配置、active ID、加密 API key | `<userData>/models.json` | `ModelConfigurationService` 编排，`FileModelRepository` 原子持久化，`safeStorage` 加解密。 |
+| 本地 Codex 登录 | `CODEX_HOME/auth.json`，默认 `~/.codex/auth.json` | Codex 拥有并更新；Orbit 主进程仅按需只读有效 access token，不复制 / 刷新 / 回写。 |
+| 旧文字模型环境配置、Qwen 语音凭据 | 本机环境变量 / `.env` | 主进程加载；旧文字配置只在没有 `models.json` 时生效。凭据不发送到界面。 |
 
 SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的统一事务。已保存任务以 SQLite 为准；模型停止或进程退出不会回滚已提交任务。恢复逻辑避免自动重放已经接收的轮次。
 
@@ -222,10 +244,12 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [scripts/build-electron.mjs](../scripts/build-electron.mjs) | `npm run build` 的 Electron 阶段 | 用 esbuild 生成 `main.cjs`、`preload.cjs` 和独立 ESM `agent-worker.mjs`。worker 的 npm 包保持外部依赖，保留 Pi 包自身的运行资源。 |
 | [scripts/setup-voice.mjs](../scripts/setup-voice.mjs) | `npm run setup:voice` | 下载固定版本的关键词模型压缩包，校验 SHA-256，解压指定文件到 `assets/voice/`，清理临时目录。 |
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
+| [scripts/model-smoke.mjs](../scripts/model-smoke.mjs) | `npm run test:desktop` 的第二阶段 | 通过真实 preload / IPC 验证模型配置增删改查、系统加密、连接测试、切换和重启、回复中互斥；临时 Codex 文件用于检测、过期拒绝与只读验证。不调用真实云端模型。 |
+| [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron UI / IPC 测试连接、流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
 | [scripts/voice-smoke.mjs](../scripts/voice-smoke.mjs) | `node scripts/voice-smoke.mjs` | 显式联网验证：使用模拟麦克风和本机语音配置，检查真实 Qwen 会话、停止与本地唤醒初始化；保存语音界面截图。需要先构建、安装唤醒模型并准备 `artifacts/`。 |
 | [scripts/voice-roundtrip.mjs](../scripts/voice-roundtrip.mjs) | `node scripts/voice-roundtrip.mjs <wake.wav> <query.wav>` | 显式联网验证：输入两份单声道 16 kHz WAV，按实时速率注入唤醒词和提问，等待语音回复，输出转写 / 状态事件及音频块数量。需要已构建桌面、唤醒模型和 Qwen 配置。 |
 
-普通业务 / Pi 测试和桌面 smoke 使用本机模型桩，不消耗真实云端模型额度。两个 `voice-*` 验证脚本会调用真实语音 API，未纳入 `npm run check`。
+普通业务 / Pi 测试和 `npm run test:desktop` 使用本机模型桩，不消耗真实云端模型额度。`codex-live-smoke.mjs` 和两个 `voice-*` 验证脚本会调用真实服务，未纳入 `npm run check`。
 
 ### 5.4 依赖各自负责什么
 
@@ -261,8 +285,12 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [tests/workspace.test.ts](../tests/workspace.test.ts) | 保存需求的幂等性、同一 ID 不同内容的拒绝、明确的未执行回执、无效附件回滚、独立任务取消、附件副本及重启持久化。 |
 | [tests/agent.test.ts](../tests/agent.test.ts) | 真实 Pi SDK 对接本机模型桩，验证流式聊天、工具白名单、业务去重、上下文恢复、中断、服务错误、附件范围及未配置模型时保留输入。 |
 | [tests/agent-host.test.ts](../tests/agent-host.test.ts) | 通过真实 Node 子进程运行 worker，验证崩溃后恢复同一会话、不重放轮次、关闭时中断正在运行的回复。 |
+| [tests/models.test.ts](../tests/models.test.ts) | 多配置与密钥隔离、加密持久化、环境优先级、保存 / 切换失败回滚、回复中互斥、损坏文件保护、输入和目录验证、Codex 文件只读 / 轮换 / 过期。 |
+| [tests/model-runtime.test.ts](../tests/model-runtime.test.ts) | 真实 Pi SDK 的五种 provider 协议、请求鉴权、连接测试无会话、跨 provider 切换保留历史、Codex 轮换与过期不接受输入、错误脱敏及无 OAuth 刷新；订阅退役过滤不影响 API 模型或旧配置修复。 |
 | [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证会话就绪前不发音频、只执行完成响应中的工具、停止后的旧会话事件不会影响新会话。 |
 | [tests/fixtures/model-server.ts](../tests/fixtures/model-server.ts) | 本机 HTTP Chat Completions 流式模型桩；提供问候、任务工具、重复 / 非法工具、慢回复及失败场景，同时记录请求供断言使用。被 Pi 测试与桌面 smoke 复用。 |
+| [tests/fixtures/provider-server.ts](../tests/fixtures/provider-server.ts) | 本机 Responses、Codex Responses、Anthropic Messages 和 Chat Completions SSE 协议桩，接收 Codex zstd 请求并记录测试请求。 |
+| [tests/fixtures/codex-auth.ts](../tests/fixtures/codex-auth.ts) | 生成包含合成 account claim 和到期时间的测试 JWT；仅用于临时文件和本机模拟服务。 |
 
 `npm test` 运行 `tests/*.test.ts`；`npm run check` 包含类型检查、这些测试和构建。`npm run test:desktop` 需要先构建并有图形会话，覆盖真实 Electron 集成。
 
@@ -272,7 +300,8 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | --- | --- | --- |
 | 常驻 Agent 的身份、澄清或保存策略 | `application/interaction.ts` | `tests/agent.test.ts`；语音有独立提示词，需检查 `domains/voice/realtime.ts`。 |
 | 新增一个文字业务工具 | `application/interaction.ts` 的工具 schema 与 `execute` | 在对应应用服务 / 领域实现动作；Pi 适配层按工具定义注册，只有运行能力变化时才需要调整适配。补充模型桩和相关测试。 |
-| 模型服务配置、流式状态、上下文恢复 | `infrastructure/pi/session.ts` | `.env.example`、README、`tests/agent.test.ts`。 |
+| 模型配置 / provider / 凭据 | `domains/models`、`application/models.ts`、`infrastructure/models`、`infrastructure/pi/models.ts` | `MODEL_PROVIDERS.md`、preload / main / worker、模型测试；配置 UI 为 PR2。 |
+| 流式状态、上下文恢复、模型切换 | `infrastructure/pi/session.ts` | `tests/agent.test.ts`、`tests/model-runtime.test.ts`。 |
 | 子进程崩溃、超时、停止或退出 | `infrastructure/pi/host.ts`、`desktop/agent-worker.ts` | `pi/protocol.ts`、`desktop/main.ts`、`tests/agent-host.test.ts`。 |
 | 任务字段、状态或取消规则 | `contracts.ts`、`domains/tasks/task.ts` | `repository.ts`、`application/workspace.ts`、任务 UI、工作空间测试；真实执行状态需要对应执行回执。 |
 | 需求保存、去重或系统回执 | `application/workspace.ts`、`domains/conversation/intake.ts` | `domains/tasks/repository.ts`；文字工具轮次去重键在 `application/interaction.ts`。 |
@@ -291,6 +320,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [README.md](../README.md) | 项目入口：当前能力、安装启动、模型与语音配置、验证命令。 |
 | [PRODUCT.md](PRODUCT.md) | 产品定位、角色、目标体验与验收方向；包含尚未实现的规划。 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 当前模块边界、运行链路、状态归属、Pi 接入取舍与下一步。 |
+| [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md) | PR1 provider 范围、配置优先级与凭据边界、PR2 IPC 契约、使用示例和验证。 |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | 本页：目录和逐文件职责、调用路径、维护入口。 |
 | [orbit-business-flow.html](orbit-business-flow.html) | Pi 接入前的业务链路可视化快照，基于 `main` 的 `d3ee5e1`（2026-10-11）。其中的文字入口描述不代表当前 Pi 实现；当前状态以源码与架构文档为准。 |
 

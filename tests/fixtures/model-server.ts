@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 // A local HTTP provider, not a fake AgentSession: Pi still runs streaming,
 // tool dispatch, context reconstruction, cancellation and persistence itself.
 export async function createModelServer() {
+  const authorizations: Array<string | undefined> = [];
   const requests: Array<{ messages: Array<{ role: string; content?: string | Array<{ type: string; text?: string }> }>; tools?: Array<{ function: { name: string } }> }> = [];
   const held = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
@@ -13,6 +14,7 @@ export async function createModelServer() {
     if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) { res.writeHead(404).end(); return; }
     const body = JSON.parse(Buffer.concat(chunks).toString()) as typeof requests[number];
     requests.push(body);
+    authorizations.push(req.headers.authorization);
     const last = body.messages.at(-1);
     const user = [...body.messages].reverse().find(message => message.role === 'user');
     const text = typeof user?.content === 'string' ? user.content : (user?.content ?? []).map(part => part.text ?? '').join('');
@@ -46,7 +48,7 @@ export async function createModelServer() {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   return {
-    requests, env: { ORBIT_AGENT_BASE_URL: url, ORBIT_AGENT_MODEL: 'orbit-test', ORBIT_AGENT_API_KEY: 'local-test-only' },
+    requests, authorizations, env: { ORBIT_AGENT_BASE_URL: url, ORBIT_AGENT_MODEL: 'orbit-test', ORBIT_AGENT_API_KEY: 'local-test-only' },
     async close() {
       for (const response of held) response.destroy();
       server.closeAllConnections(); server.close(); await once(server, 'close');
