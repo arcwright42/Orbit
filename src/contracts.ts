@@ -8,9 +8,11 @@ export interface Attachment {
 
 export interface Message {
   id: string;
-  role: 'user' | 'system';
+  role: 'user' | 'system' | 'assistant';
   text: string;
-  taskId: string;
+  taskId?: string;
+  attachmentIds?: string[];
+  requestId?: string;
   createdAt: string;
 }
 
@@ -37,7 +39,21 @@ export interface Workspace {
   attachments: Attachment[];
 }
 
+export interface Conversation {
+  sessionId?: string;
+  model?: string;
+  configured: boolean;
+  status: 'idle' | 'running';
+  messages: Message[];
+  draft: string;
+  error?: string;
+}
+
 export interface OrbitApi {
+  conversation(): Promise<Conversation>;
+  sendMessage(input: SubmitRequest): Promise<void>;
+  stopReply(): Promise<void>;
+  onConversation(listener: (state: Conversation) => void): () => void;
   voiceStart(wake: boolean): Promise<void>;
   voiceStop(): Promise<void>;
   voiceAudio(data: Uint8Array): Promise<void>;

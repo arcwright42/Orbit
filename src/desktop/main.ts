@@ -2,14 +2,16 @@ import { loadEnvFile } from 'node:process';
 import { randomUUID } from 'node:crypto';
 import { RealtimeVoice } from '../domains/voice/realtime';
 import { WakeDetector } from '../domains/voice/wake';
-import type { VoiceEvent } from '../contracts';
-import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import type { Conversation, VoiceEvent } from '../contracts';
+import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell, utilityProcess } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { openDatabase } from '../infrastructure/database';
 import { MaterialLibrary } from '../domains/materials/library';
 import { WorkspaceService } from '../application/workspace';
+import { InteractionService, INTERACTION_PROMPT, INTERACTION_TOOLS } from '../application/interaction';
+import { PiAgentHost } from '../infrastructure/pi/host';
 
 try { loadEnvFile(resolve(__dirname, '../.env')); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 app.setName('Orbit');
@@ -27,6 +29,20 @@ app.whenReady().then(() => {
   const db = openDatabase(join(dataDir, 'orbit.sqlite'));
   const materials = new MaterialLibrary(db, join(dataDir, 'attachments'));
   const workspace = new WorkspaceService(db, materials);
+  const interaction = new InteractionService(workspace);
+  const emitConversation = (state: Conversation) => {
+    if (window && !window.isDestroyed()) window.webContents.send('conversation:state', state);
+  };
+  const agent = new PiAgentHost(() => {
+    const child = utilityProcess.fork(join(__dirname, 'agent-worker.mjs'), [], { serviceName: 'Orbit interaction agent', stdio: 'ignore' });
+    return {
+      send: message => child.postMessage(message),
+      onMessage: listener => { child.on('message', listener); },
+      onExit: listener => { child.on('exit', listener); },
+      kill: () => { child.kill(); },
+    };
+  }, { directory: join(dataDir, 'agent'), systemPrompt: INTERACTION_PROMPT, tools: INTERACTION_TOOLS },
+  (name, args, context) => interaction.execute(name, args, context), emitConversation);
   const handle = (channel: string, action: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
@@ -66,6 +82,9 @@ app.whenReady().then(() => {
   });
   app.on('before-quit', stopVoice);
   handle('workspace:read', () => workspace.snapshot());
+  handle('conversation:read', () => agent.read());
+  handle('conversation:send', input => agent.send(interaction.prepare(input)));
+  handle('conversation:abort', () => agent.abort());
   handle('workspace:submit', input => workspace.submit(input));
   handle('task:cancel', id => workspace.cancelTask(id));
   handle('materials:pick', async () => {
@@ -111,7 +130,15 @@ app.whenReady().then(() => {
   ]));
   createWindow();
   app.on('activate', () => { if (!window) createWindow(); window!.show(); });
-  app.on('will-quit', () => db.close());
+  let shutdownComplete = false;
+  app.on('before-quit', event => {
+    if (shutdownComplete) return;
+    event.preventDefault();
+    void agent.close().catch(() => {}).finally(() => {
+      if (shutdownComplete) return;
+      shutdownComplete = true; db.close(); app.quit();
+    });
+  });
 });
 app.on('before-quit', () => { quitting = true; });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createModelServer } from '../tests/fixtures/model-server.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'orbit-desktop-smoke-'));
+const model = await createModelServer();
 await mkdir('artifacts', { recursive: true });
-const env = { ...process.env, ORBIT_DATA_DIR: directory };
+const env = { ...process.env, ...model.env, ORBIT_DATA_DIR: directory };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ORBIT_DEV_URL;
 let app;
@@ -16,9 +18,14 @@ try {
   let page = await app.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('textbox', { name: '你的需求' }).waitFor();
+  await page.waitForFunction(async () => (await window.orbit.conversation()).configured);
   await page.screenshot({ path: 'artifacts/orbit-home.png' });
+  await page.getByRole('textbox', { name: '你的需求' }).fill('你好');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await page.getByText('你好，我是 Orbit。我们可以先明确你的目标。', { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.orbit.workspace())).tasks.length, 0);
   await page.getByRole('textbox', { name: '你的需求' }).fill('为我的读书笔记设计一个个人网站');
-  await page.getByRole('button', { name: '保存需求', exact: true }).click();
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
   await page.getByRole('button', { name: '切换侧栏' }).click();
   await page.getByRole('navigation').getByRole('button', { name: /任务/ }).click();
@@ -29,6 +36,7 @@ try {
   await page.getByRole('dialog').getByText('已取消', { exact: true }).waitFor();
   await page.getByRole('button', { name: '关闭任务详情' }).click();
   const initial = await page.evaluate(() => window.orbit.workspace());
+  const conversation = await page.evaluate(() => window.orbit.conversation());
   assert.equal(initial.tasks.length, 1);
   assert.equal(initial.tasks[0].status, 'canceled');
   await app.close(); app = undefined;
@@ -38,13 +46,41 @@ try {
   await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
   const restored = await page.evaluate(() => window.orbit.workspace());
   assert.deepEqual(restored, initial);
+  const resumed = await page.evaluate(() => window.orbit.conversation());
+  assert.equal(resumed.sessionId, conversation.sessionId);
+  assert.deepEqual(resumed.messages, conversation.messages);
+  await page.getByRole('textbox', { name: '你的需求' }).fill('慢回复');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await page.getByText('正在等待测试中断', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '停止回复', exact: true }).click();
+  await page.getByText('已停止回复。已保存的需求会保留。', { exact: true }).waitFor();
+  await page.screenshot({ path: 'artifacts/orbit-conversation.png' });
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('heading', { name: '语音交互' }).waitFor();
   await page.getByRole('button', { name: '开启语音唤醒' }).waitFor();
   await page.screenshot({ path: 'artifacts/orbit-settings.png' });
+  await app.close(); app = undefined;
+  app = await electron.launch({ args: ['.'], env: { ...env, ORBIT_AGENT_BASE_URL: '', ORBIT_AGENT_PROVIDER: '', ORBIT_AGENT_MODEL: '', ORBIT_AGENT_API_KEY: '' } });
+  page = await app.firstWindow();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.getByRole('textbox', { name: '你的需求' }).waitFor();
+  assert.equal((await page.evaluate(() => window.orbit.conversation())).configured, false);
+  await page.getByRole('textbox', { name: '你的需求' }).fill('仅离线保存的需求');
+  await page.getByRole('button', { name: '仅保存需求', exact: true }).click();
+  await page.waitForFunction(async () => (await window.orbit.workspace()).tasks.length === 2);
+  assert.ok(await page.getByRole('button', { name: '发送消息', exact: true }).isDisabled());
   assert.deepEqual(errors, []);
-  console.log('Desktop smoke passed: intake, task cancellation, restart persistence, voice settings; no renderer errors.');
+  console.log('Desktop smoke passed: real Pi worker, streamed chat, business tools, task cancellation, session restoration, abort, unconfigured fallback, voice settings; no renderer errors.');
+} catch (error) {
+  const page = app?.windows()[0];
+  if (page) {
+    await page.screenshot({ path: 'artifacts/orbit-smoke-failure.png' }).catch(() => {});
+    console.error('Conversation at failure:', await page.evaluate(() => window.orbit.conversation()).catch(() => undefined));
+    console.error('Recent local model request:', model.requests.at(-1));
+  }
+  throw error;
 } finally {
   if (app) await app.close();
+  await model.close();
   await rm(directory, { recursive: true, force: true });
 }

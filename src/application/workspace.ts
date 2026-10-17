@@ -22,14 +22,19 @@ export class WorkspaceService {
   }
 
   submit(value: unknown): Workspace {
+    this.saveRequest(value);
+    return this.snapshot();
+  }
+
+  saveRequest(value: unknown, source: 'direct' | 'agent' = 'direct'): Task {
     const input = validateRequest(value);
-    transaction(this.db, () => {
+    return transaction(this.db, () => {
       const existing = this.tasks.findRequest(input.requestId);
       if (existing) {
         if (existing.brief !== input.text || JSON.stringify(existing.attachmentIds) !== JSON.stringify(input.attachmentIds)) {
           throw new Error('请求标识已经用于其他内容，请重新发送。');
         }
-        return;
+        return existing;
       }
       input.attachmentIds.forEach(id => this.materials.require(id));
       const now = new Date().toISOString();
@@ -41,11 +46,11 @@ export class WorkspaceService {
       this.tasks.create(task);
       const user: Message = { id: randomUUID(), role: 'user', text: input.text || '已添加附件', taskId: task.id, createdAt: now };
       const receipt = intakeReceipt(task, randomUUID());
-      for (const message of [user, receipt]) {
+      for (const message of source === 'agent' ? [receipt] : [user, receipt]) {
         this.db.prepare('INSERT INTO messages VALUES (?, ?, ?)').run(message.id, task.id, JSON.stringify(message));
       }
+      return task;
     });
-    return this.snapshot();
   }
 
   cancelTask(id: unknown): Workspace {

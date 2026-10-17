@@ -205,3 +205,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline-colo
 .voice-heading .secondary-button { margin-left: auto; font-size: 12px; padding: 6px 9px; }
 .voice-transcripts { overflow: auto; max-height: 200px; font-size: 13px; color: #666; }
 .voice-transcripts p { line-height: 1.6; }
+
+.conversation-notice { margin: 10px 7px 0; color: #808080; font-size: 12px; line-height: 1.7; }
+.composer-footer button:disabled { opacity: .45; }
