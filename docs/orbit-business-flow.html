@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Orbit main 分支的实际业务链路：文字需求、附件资料、实时语音、任务管理与持久化。基于 d3ee5e1 核对。">
+  <title>Orbit · 当前业务链路</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f7; --paper: #fff; --ink: #1e293b; --muted: #64748b;
+      --line: #dfe5ec; --soft: #f8fafc; --navy: #253b57; --blue: #3769b5;
+      --teal: #168574; --teal-soft: #edf8f4; --purple: #7953bb; --purple-soft: #f5f0fc;
+      --amber: #a26a11; --amber-soft: #fff8e9; --shadow: 0 5px 24px #1e293b05;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #10161f; --paper: #17202c; --ink: #e5ecf5; --muted: #9aaac0;
+      --line: #2c394a; --soft: #1d2938; --navy: #bfd2ed; --blue: #93b8f0;
+      --teal: #70c9b5; --teal-soft: #1a322e; --purple: #c6a3f6; --purple-soft: #2b233b;
+      --amber: #e6bb6d; --amber-soft: #342d20; --shadow: none;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.6; }
+    button { font: inherit; }
+    button, [role="button"] { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, [role="button"]:focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+    button { cursor: pointer; }
+    .page { max-width: 1860px; margin: 0 auto; padding: 28px 36px 20px; }
+    .masthead { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 750; letter-spacing: .05em; }
+    .brand svg { width: 29px; height: 29px; color: var(--navy); }
+    .brand span { color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: .13em; padding-left: 14px; border-left: 1px solid var(--line); }
+    .header-tools { display: flex; gap: 8px; align-items: center; }
+    .pill { border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; font: 11px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: var(--paper); white-space: nowrap; }
+    .theme-toggle { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--paper); padding: 4px 10px; font-size: 12px; }
+    .theme-toggle svg { width: 14px; height: 14px; }
+    .intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 30px; margin: 19px 0 16px; }
+    .eyebrow { margin: 0 0 4px; color: var(--teal); font-size: 11px; letter-spacing: .13em; font-weight: 700; }
+    h1 { margin: 0; font-size: clamp(27px, 2.3vw, 39px); line-height: 1.35; letter-spacing: -.04em; font-weight: 700; }
+    .intro p:last-child { margin: 9px 0 0; font-size: 14px; color: var(--muted); }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 12px; white-space: nowrap; padding-bottom: 4px; }
+    .status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 326px; gap: 18px; align-items: stretch; }
+    .diagram-card, .inspector { border: 1px solid var(--line); background: var(--paper); border-radius: 12px; box-shadow: var(--shadow); min-width: 0; }
+    .diagram-card { display: flex; flex-direction: column; }
+    .diagram-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+    .tab { color: var(--muted); background: transparent; border: 0; padding: 5px 10px; border-radius: 5px; font-size: 12px; line-height: 1.6; white-space: nowrap; }
+    .tab[aria-pressed="true"] { color: var(--paper); background: var(--navy); font-weight: 650; }
+    :root[data-theme="dark"] .tab[aria-pressed="true"] { color: #142032; }
+    .hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .diagram-stage { flex: 1; display: flex; align-items: center; padding: 10px 12px; min-height: clamp(390px, calc(100vh - 440px), 800px); }
+    .flow-map { display: block; width: 100%; height: auto; overflow: visible; }
+    .lane-bg { fill: var(--soft); stroke: var(--line); stroke-width: 1; }
+    .lane-label { fill: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .08em; }
+    .lane-index { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+    .node { cursor: pointer; transition: opacity .18s; outline: none; }
+    .node .box { fill: var(--paper); stroke: var(--line); stroke-width: 1.3; transition: stroke .18s; }
+    .node:hover .box, .node:focus-visible .box { stroke: var(--blue); stroke-width: 2.5; }
+    .node .title { fill: var(--ink); font-size: 16px; font-weight: 650; }
+    .node .sub { fill: var(--muted); font-size: 12px; }
+    .node .tag { fill: var(--muted); font-size: 10.5px; }
+    .node.material .box { fill: var(--teal-soft); stroke: var(--teal); stroke-opacity: .35; }
+    .node.voice .box { fill: var(--purple-soft); stroke: var(--purple); stroke-opacity: .35; }
+    .node.pending .box { fill: var(--amber-soft); stroke: var(--amber); stroke-opacity: .6; }
+    .node.pending .title, .node.pending .tag { fill: var(--amber); }
+    .connector { transition: opacity .18s; }
+    .connector path { fill: none; stroke: var(--blue); stroke-width: 1.7; marker-end: url(#arrow); }
+    .connector text { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+    .connector.material path { stroke: var(--teal); marker-end: url(#arrow-teal); }
+    .connector.voice path { stroke: var(--purple); marker-end: url(#arrow-purple); }
+    .connector.read path { stroke-dasharray: 4 4; }
+    .muted-flow { opacity: .2; }
+    .map-caption { margin: 0; padding: 13px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { width: 6px; height: 6px; background: var(--blue); border-radius: 2px; }
+    .legend .teal { background: var(--teal); } .legend .purple { background: var(--purple); } .legend .amber { background: var(--amber); }
+    .inspector { padding: 23px 22px 20px; display: flex; flex-direction: column; }
+    .detail-kicker { color: var(--muted); font-size: 10px; letter-spacing: .12em; margin: 0 0 7px; }
+    .inspector h2 { font-size: 21px; letter-spacing: -.03em; margin: 0 0 9px; line-height: 1.4; }
+    .detail-summary { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+    .steps { padding: 0; margin: 0 0 12px; list-style: none; counter-reset: step; }
+    .steps li { position: relative; padding: 0 0 14px 28px; counter-increment: step; font-size: 12px; }
+    .steps li::before { content: counter(step, decimal-leading-zero); position: absolute; top: 1px; left: 0; color: var(--teal); font: 10px/1.8 ui-monospace, monospace; }
+    .steps strong { display: block; font-weight: 650; font-size: 12px; margin-bottom: 3px; }
+    .steps p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.75; }
+    .detail-note { border-left: 2px solid var(--amber); padding: 0 0 0 11px; font-size: 11.5px; color: var(--muted); margin: auto 0 0; }
+    .source { border-top: 1px solid var(--line); padding-top: 10px; margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+    .source code { color: var(--ink); font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .boundary { display: grid; grid-template-columns: auto 1fr; gap: 22px; align-items: center; margin-top: 18px; padding: 17px 21px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+    .boundary-label { color: var(--amber); font-size: 12px; font-weight: 650; white-space: nowrap; }
+    .boundary p { margin: 0; font-size: 12px; color: var(--muted); }
+    .boundary strong { color: var(--ink); font-weight: 600; }
+    footer { display: flex; justify-content: space-between; gap: 18px; margin-top: 16px; font-size: 10px; color: var(--muted); }
+    .all-notes { display: none; }
+    @media (min-width: 1700px) {
+      .page { padding-top: 28px; }
+      .intro { margin-top: 24px; margin-bottom: 20px; }
+      .workspace { grid-template-columns: minmax(0, 1fr) 350px; gap: 22px; }
+      .inspector { padding: 27px; }
+      .detail-summary, .steps strong { font-size: 14px; }
+      .steps p, .detail-note { font-size: 13px; }
+      .steps li { padding-bottom: 22px; }
+    }
+    @media (max-width: 1100px) {
+      .page { padding: 22px; }
+      .workspace { grid-template-columns: 1fr; }
+      .diagram-stage { min-height: 0; padding: 14px 10px; }
+      .inspector { min-height: 0; }
+      .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 26px; }
+      .hint { display: none; }
+    }
+    @media (max-width: 620px) {
+      .page { padding: 18px 12px; }
+      .brand span, .header-tools .pill { display: none; }
+      .intro { display: block; margin-top: 25px; }
+      .intro p:last-child { font-size: 12px; max-width: 36em; }
+      .status { margin-top: 12px; }
+      .diagram-toolbar { padding: 10px; }
+      .tab { padding: 5px 8px; }
+      .diagram-stage { padding: 8px 4px; }
+      .flow-map { aspect-ratio: 540 / 910; }
+      .map-caption { font-size: 10px; padding: 10px 12px; }
+      .steps { display: block; }
+      .boundary { grid-template-columns: 1fr; gap: 7px; padding: 15px; }
+      footer { flex-direction: column; gap: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --paper: #fff; --ink: #1e293b; --muted: #52647c; --line: #dfe5ec; --soft: #f8fafc; --navy: #253b57; --blue: #3769b5; --teal: #168574; --teal-soft: #edf8f4; --purple: #7953bb; --purple-soft: #f5f0fc; --amber: #a26a11; --amber-soft: #fff8e9; }
+      .page { max-width: none; padding: 0; } .header-tools, .diagram-toolbar, .inspector, .hint { display: none; }
+      .workspace { display: block; } .diagram-stage { min-height: 0; } .muted-flow { opacity: 1; }
+      .all-notes { display: block; margin-top: 28px; } .all-notes section { break-inside: avoid; margin-bottom: 22px; }
+      .all-notes h2 { font-size: 17px; } .all-notes p, .all-notes li { font-size: 12px; }
+      .flow-map { aspect-ratio: auto; } .boundary, .diagram-card { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="4" fill="currentColor"/><ellipse cx="16" cy="16" rx="14" ry="7" transform="rotate(-35 16 16)" stroke="currentColor" stroke-width="1.5"/><ellipse cx="16" cy="16" rx="14" ry="7" transform="rotate(55 16 16)" stroke="currentColor" stroke-width="1.5"/></svg>
+        ORBIT <span>业务链路说明</span>
+      </div>
+      <div class="header-tools">
+        <span class="pill">main · d3ee5e1</span>
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换深色主题"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.8 12.3A7 7 0 0 1 7.7 3.2 7 7 0 1 0 16.8 12.3Z" stroke="currentColor" stroke-width="1.5"/></svg><span id="theme-label">深色</span></button>
+      </div>
+    </header>
+    <section class="intro" aria-labelledby="page-title">
+      <div><p class="eyebrow">当前实现 · 2026.10.17 核对</p><h1 id="page-title">从用户输入，到待派发需求。</h1><p>文字直接保存需求，语音按需调用工具。两条入口共用本地任务库。</p></div>
+      <div class="status"><i aria-hidden="true"></i>执行链路尚未接通</div>
+    </section>
+    <div class="workspace">
+      <section class="diagram-card" aria-label="业务流程图">
+        <div class="diagram-toolbar">
+          <nav class="tabs" aria-label="选择业务链路">
+            <button class="tab" type="button" data-select="overview" aria-pressed="true">全局链路</button>
+            <button class="tab" type="button" data-select="text" aria-pressed="false">文字需求</button>
+            <button class="tab" type="button" data-select="materials" aria-pressed="false">附件资料</button>
+            <button class="tab" type="button" data-select="voice" aria-pressed="false">实时语音</button>
+            <button class="tab" type="button" data-select="tasks" aria-pressed="false">任务状态</button>
+          </nav>
+          <span class="hint">点击节点查看说明</span>
+        </div>
+        <div class="diagram-stage">
+          <svg class="flow-map" id="flow-map" viewBox="0 0 1120 500" role="group" aria-labelledby="map-title map-desc">
+            <title id="map-title">Orbit 当前业务链路</title>
+            <desc id="map-desc">附件导入副本后可关联文字需求。文字与语音保存操作进入同一保存流程，生成待派发任务。任务可查看或取消。语音还可普通聊天和查询本地任务。没有任务执行环节。</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="var(--blue)" stroke-width="1.5"/></marker>
+              <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="var(--teal)" stroke-width="1.5"/></marker>
+              <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="var(--purple)" stroke-width="1.5"/></marker>
+            </defs>
+            <g class="desktop-lanes">
+              <rect class="lane-bg" x="18" y="12" width="1084" height="148" rx="10"/><text class="lane-index" x="40" y="39">01</text><text class="lane-label" x="65" y="39">附件资料</text>
+              <rect class="lane-bg" x="18" y="170" width="1084" height="148" rx="10"/><text class="lane-index" x="40" y="197">02</text><text class="lane-label" x="65" y="197">需求与任务</text>
+              <rect class="lane-bg" x="18" y="328" width="1084" height="148" rx="10"/><text class="lane-index" x="40" y="355">03</text><text class="lane-label" x="65" y="355">实时语音</text>
+            </g>
+            <g class="connector material" data-route="materials"><path d="M220 100H268"/><text x="244" y="89">导入</text></g>
+            <g class="connector material" data-route="materials"><path d="M356 144V214"/><text x="389" y="183">关联附件</text></g>
+            <g class="connector" data-route="text"><path d="M220 258H268"/><text x="244" y="246">提交</text></g>
+            <g class="connector" data-route="text materials voice tasks"><path d="M444 258H492"/><text x="468" y="246">保存</text></g>
+            <g class="connector" data-route="text materials voice tasks"><path d="M668 258H716"/><text x="692" y="246">展示</text></g>
+            <g class="connector" data-route="tasks"><path d="M892 258H940"/><text x="916" y="246">取消</text></g>
+            <g class="connector voice" data-route="voice"><path d="M220 416H268"/><text x="244" y="404">就绪</text></g>
+            <g class="connector voice" data-route="voice"><path d="M356 372V302"/><text x="389" y="336">保存需求</text></g>
+            <g class="connector voice" data-route="voice"><path d="M444 416H492"/><text x="468" y="404">查询</text></g>
+            <g class="connector voice read" data-route="voice"><path d="M580 372V302"/><text x="612" y="336">读取状态</text></g>
+            <g class="node material" data-node="file" data-select="materials" data-route="materials" role="button" tabindex="0" aria-label="选择文件：查看附件业务说明" transform="translate(44 56)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">选择文件</text><text class="sub" x="15" y="51">校验格式与大小</text><text class="tag" x="15" y="72">单个文件 ≤25 MB</text>
+            </g>
+            <g class="node material" data-node="copy" data-select="materials" data-route="materials" role="button" tabindex="0" aria-label="保存附件副本：查看附件业务说明" transform="translate(268 56)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">保存附件副本</text><text class="sub" x="15" y="51">入文件库，可本地打开</text><text class="tag" x="15" y="72">当前不解析内容</text>
+            </g>
+            <g class="node" data-node="text" data-select="text" data-route="text materials" role="button" tabindex="0" aria-label="文字输入：查看需求保存说明" transform="translate(44 214)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">文字输入</text><text class="sub" x="15" y="51">可以附带最多 8 个文件</text><text class="tag" x="15" y="72">保存需求 / ⌘Enter</text>
+            </g>
+            <g class="node" data-node="save" data-select="text" data-route="text materials voice tasks" role="button" tabindex="0" aria-label="校验并保存：查看保存规则" transform="translate(268 214)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">校验并保存</text><text class="sub" x="15" y="51">相同请求标识去重</text><text class="tag" x="15" y="72">失败时整次回滚</text>
+            </g>
+            <g class="node pending" data-node="pending" data-select="tasks" data-route="text materials voice tasks" role="button" tabindex="0" aria-label="待派发任务：查看当前任务状态" transform="translate(492 214)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">待派发任务</text><text class="sub" x="15" y="51">任务 + 消息 + 系统回执</text><text class="tag" x="15" y="72">SQLite 本地保存</text>
+            </g>
+            <g class="node" data-node="view" data-select="tasks" data-route="text materials voice tasks" role="button" tabindex="0" aria-label="查看任务：查看管理与恢复说明" transform="translate(716 214)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">查看任务</text><text class="sub" x="15" y="51">任务卡 · 看板 · 详情</text><text class="tag" x="15" y="72">搜索 / 筛选 / 打开资料</text>
+            </g>
+            <g class="node" data-node="cancel" data-select="tasks" data-route="tasks" role="button" tabindex="0" aria-label="已取消：取消后保留全部记录" transform="translate(940 214)">
+              <rect class="box" width="136" height="88" rx="8"/><text class="title" x="15" y="29">已取消</text><text class="sub" x="15" y="51">由用户手动取消</text><text class="tag" x="15" y="72">保留历史记录</text>
+            </g>
+            <g class="node voice" data-node="voice" data-select="voice" data-route="voice" role="button" tabindex="0" aria-label="启动语音：查看语音与唤醒说明" transform="translate(44 372)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">启动语音</text><text class="sub" x="15" y="51">按键 / Hey Orbit 唤醒</text><text class="tag" x="15" y="72">唤醒前在本机识别</text>
+            </g>
+            <g class="node voice" data-node="qwen" data-select="voice" data-route="voice" role="button" tabindex="0" aria-label="Qwen 实时会话：查看可用语音工具" transform="translate(268 372)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">Qwen 实时会话</text><text class="sub" x="15" y="51">聊天 · 播放 · 转写</text><text class="tag" x="15" y="72">普通聊天不创建任务</text>
+            </g>
+            <g class="node voice" data-node="query" data-select="voice" data-route="voice" role="button" tabindex="0" aria-label="查询任务并回复：读取本地真实任务状态" transform="translate(492 372)">
+              <rect class="box" width="176" height="88" rx="8"/><text class="title" x="15" y="29">查询任务并回复</text><text class="sub" x="15" y="51">读取标题与真实状态</text><text class="tag" x="15" y="72">list_tasks</text>
+            </g>
+          </svg>
+        </div>
+        <div class="map-caption"><div class="legend"><span><i></i>需求处理</span><span><i class="teal"></i>附件资料</span><span><i class="purple"></i>语音交互</span><span><i class="amber"></i>当前执行边界</span></div><span>实线：业务流转　虚线：读取数据</span></div>
+      </section>
+      <aside class="inspector" id="detail-panel" aria-labelledby="detail-title" aria-live="polite" aria-atomic="true">
+        <p class="detail-kicker" id="detail-kicker"></p><h2 id="detail-title"></h2><p class="detail-summary" id="detail-summary"></p>
+        <ol class="steps" id="detail-steps"></ol><p class="detail-note" id="detail-note"></p><p class="source" id="detail-source"></p>
+      </aside>
+    </div>
+    <section class="boundary" aria-label="当前实现边界"><div class="boundary-label">当前业务断点</div><p><strong>待派发 → 实际执行</strong> 尚未连接。团队创建、任务派发、进度回传、成果提交与验收，均未接入当前 main。</p></section>
+    <section class="all-notes" id="all-notes" aria-label="完整业务说明"></section>
+    <footer><span>依据 Orbit main · d3ee5e1（2026-10-11）｜核对日期 2026-10-17</span><span>自包含 HTML · 无外部资源 · 可离线打开</span></footer>
+  </main>
+  <script>
+    const content = {
+      overview: {
+        kicker: '全局视图', title: '两条入口，一份任务库',
+        summary: '当前业务围绕收集需求、保存资料、查看任务展开，实际执行尚未接通。',
+        steps: [
+          ['文字直接保存', '输入文字或添加附件，提交后生成待派发任务和系统回执。没有文本模型对话环节。'],
+          ['语音按需调用工具', 'Qwen 可以聊天、查询任务；用户明确要求保存时，调用平台保存需求。'],
+          ['共用本地数据', '文字与语音保存进入同一任务库，任务、提交消息和系统回执持久化。'],
+          ['状态停在待派发', '任务可以查看或取消，目前没有执行者接收任务，也不会自动产生进展和成果。']
+        ],
+        note: '例如“帮我做一个网站”目前会保存为待派发需求，系统尚不会开始制作网站。',
+        sources: ['src/application/workspace.ts', 'src/desktop/main.ts', 'src/contracts.ts']
+      },
+      text: {
+        kicker: '链路 01 / 文字需求', title: '提交即保存一项新需求',
+        summary: '主入口接收文字和附件，直接进入本地需求保存流程。',
+        steps: [
+          ['输入与提交', '点击保存需求或按 ⌘Enter。文字最多 16,000 字符，每次最多 8 个不同附件；允许仅提供附件。'],
+          ['校验与去重', '检查请求标识和附件是否存在。同一标识、相同内容只保存一次；同一标识对应不同内容会被拒绝。'],
+          ['一次性落库', '在同一事务中创建待派发任务、用户消息和系统回执。附件无效时，整次保存回滚。'],
+          ['返回任务卡', '主入口展示系统回执和任务卡，看板同步显示待派发任务。回执明确标明尚未派发。']
+        ],
+        note: '每次提交都新建需求。“改成深色”会形成另一项需求，尚无自动关联原任务、追加要求的流程。',
+        sources: ['src/application/workspace.ts:24', 'src/domains/tasks/task.ts:3', 'src/domains/conversation/intake.ts']
+      },
+      materials: {
+        kicker: '链路 02 / 附件资料', title: '先存副本，再关联需求',
+        summary: '文件在选择时立即保存，需求提交时关联附件标识。',
+        steps: [
+          ['选择与校验', '系统文件选择器接收图片、TXT、Markdown、PDF、DOCX、CSV。单个文件上限 25 MB。'],
+          ['保存独立副本', '复制到 Orbit 的附件目录，并记录文件名、大小和存储位置。原文件后续变化不影响已导入副本。'],
+          ['关联任务', '提交需求时绑定附件标识。从输入框移除附件只解除本次选择，文件库仍保留副本。'],
+          ['查看与打开', '文件页和任务详情可打开副本。目前没有内容解析、摘要、预览转换或传给执行 Agent 的环节。']
+        ],
+        note: '“文件已接收”只说明副本已保存，系统目前尚未理解文件内容。',
+        sources: ['src/domains/materials/library.ts', 'src/desktop/main.ts:71', 'src/renderer/App.tsx']
+      },
+      voice: {
+        kicker: '链路 03 / 实时语音', title: '对话、查询、保存需求',
+        summary: '按键直接连接 Qwen；唤醒模式先在本机识别 Hey Orbit，再建立云端会话。',
+        steps: [
+          ['连接与连续对话', '连接就绪后开始交流，界面显示转写并流式播放回复。普通聊天不自动创建任务。'],
+          ['查询真实任务', 'list_tasks 读取本机任务的标识、标题和状态，模型据此回答，不提供执行进度。'],
+          ['按需保存需求', '用户明确要求保存时，save_request 调用统一保存流程。只传文字，不携带输入框附件。'],
+          ['打断与结束', '开口可打断播放。结束语音会断开连接、清空播放队列并释放麦克风；再次唤醒需重新开启。']
+        ],
+        note: '语音只提供查询和保存两个工具，没有执行或取消工具；转写只保留当前界面会话，不持久化。',
+        sources: ['src/domains/voice/realtime.ts', 'src/domains/voice/wake.ts', 'src/desktop/main.ts:40', 'src/renderer/useVoice.ts']
+      },
+      tasks: {
+        kicker: '链路 04 / 任务状态', title: '待派发 → 已取消',
+        summary: '目前任务管理只覆盖需求记录的查看、取消与本地恢复。',
+        steps: [
+          ['创建为待派发', '保存需求后默认进入待派发状态，没有自动派发或开始执行的后台流程。'],
+          ['查看与管理', '可在看板或列表搜索、筛选任务，查看原始要求并打开关联附件。'],
+          ['手动取消', '用户可取消待派发任务，重复取消不重复改变状态。任务、消息和附件历史继续保留。'],
+          ['重启恢复', '重启恢复任务、提交消息、系统回执和附件副本；不恢复语音转写或执行会话。']
+        ],
+        note: '看板中的进行中、待验收、已完成为预留列；尚无统一、持久的 AI 对话历史。',
+        sources: ['src/domains/tasks/task.ts:20', 'src/infrastructure/database.ts', 'src/renderer/TaskBoard.tsx']
+      }
+    };
+    const root = document.documentElement;
+    function applyTheme(theme) {
+      root.dataset.theme = theme;
+      const dark = theme === 'dark';
+      document.getElementById('theme-label').textContent = dark ? '浅色' : '深色';
+      document.getElementById('theme-toggle').setAttribute('aria-label', dark ? '切换浅色主题' : '切换深色主题');
+    }
+    let initialTheme = 'light';
+    try { initialTheme = localStorage.getItem('orbit-flow-theme') || 'light'; } catch {}
+    applyTheme(initialTheme === 'dark' ? 'dark' : 'light');
+    document.getElementById('theme-toggle').addEventListener('click', function () {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try { localStorage.setItem('orbit-flow-theme', next); } catch {}
+    });
+    function appendSteps(target, steps) {
+      target.replaceChildren();
+      steps.forEach(function (step) {
+        const li = document.createElement('li');
+        const title = document.createElement('strong'); title.textContent = step[0];
+        const paragraph = document.createElement('p'); paragraph.textContent = step[1];
+        li.append(title, paragraph); target.append(li);
+      });
+    }
+    function selectFlow(key) {
+      const item = content[key]; if (!item) return;
+      document.getElementById('detail-kicker').textContent = item.kicker;
+      document.getElementById('detail-title').textContent = item.title;
+      document.getElementById('detail-summary').textContent = item.summary;
+      document.getElementById('detail-note').textContent = item.note;
+      appendSteps(document.getElementById('detail-steps'), item.steps);
+      const source = document.getElementById('detail-source');
+      source.replaceChildren(document.createTextNode('代码依据 · '));
+      item.sources.forEach(function (path, index) { const code = document.createElement('code'); code.textContent = path.split('/').at(-1); code.title = path; if (index) source.append(document.createTextNode(' · ')); source.append(code); });
+      document.querySelectorAll('.tab').forEach(function (tab) { tab.setAttribute('aria-pressed', String(tab.dataset.select === key)); });
+      document.querySelectorAll('[data-route]').forEach(function (item) { item.classList.toggle('muted-flow', key !== 'overview' && !item.dataset.route.split(' ').includes(key)); });
+    }
+    document.querySelectorAll('[data-select]').forEach(function (control) {
+      control.addEventListener('click', function () { selectFlow(control.dataset.select); });
+      if (control.getAttribute('role') === 'button') control.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectFlow(control.dataset.select); }
+      });
+    });
+    const notes = document.getElementById('all-notes');
+    Object.keys(content).filter(function (key) { return key !== 'overview'; }).forEach(function (key) {
+      const item = content[key]; const section = document.createElement('section');
+      const heading = document.createElement('h2'); heading.textContent = item.title;
+      const summary = document.createElement('p'); summary.textContent = item.summary;
+      const steps = document.createElement('ol'); appendSteps(steps, item.steps);
+      const note = document.createElement('p'); note.textContent = item.note;
+      section.append(heading, summary, steps, note); notes.append(section);
+    });
+    const mobile = matchMedia('(max-width: 620px)');
+    const map = document.getElementById('flow-map');
+    const desktopPositions = new Map();
+    map.querySelectorAll('[data-node]').forEach(function (node) { desktopPositions.set(node, node.getAttribute('transform')); });
+    const mobilePositions = {
+      file: [20, 45], copy: [230, 45],
+      text: [20, 220], save: [230, 220], pending: [230, 350],
+      view: [20, 480], cancel: [250, 480],
+      voice: [20, 650], qwen: [230, 650], query: [230, 785]
+    };
+    const mobilePaths = ['M196 89H230', 'M318 133V220', 'M196 264H230', 'M318 308V350', 'M230 394H108V480', 'M196 524H250', 'M196 694H230', 'M406 694H438V264H406', 'M318 738V785', 'M406 829H458V394H406'];
+    const mobileLabels = [[213, 80], [351, 179], [213, 255], [345, 334], [176, 384], [223, 515], [213, 685], [470, 603], [345, 766], [493, 665]];
+    const desktopConnectorData = [];
+    map.querySelectorAll('.connector').forEach(function (connector) {
+      const path = connector.querySelector('path'), text = connector.querySelector('text');
+      desktopConnectorData.push({ path: path.getAttribute('d'), x: text.getAttribute('x'), y: text.getAttribute('y') });
+    });
+    function layoutMap() {
+      const compact = mobile.matches;
+      map.setAttribute('viewBox', compact ? '0 0 540 910' : '0 0 1120 500');
+      map.querySelector('.desktop-lanes').style.display = compact ? 'none' : '';
+      map.querySelectorAll('[data-node]').forEach(function (node) {
+        const point = mobilePositions[node.dataset.node];
+        node.setAttribute('transform', compact ? 'translate(' + point[0] + ' ' + point[1] + ')' : desktopPositions.get(node));
+      });
+      map.querySelectorAll('.connector').forEach(function (connector, index) {
+        const path = connector.querySelector('path'), text = connector.querySelector('text'), original = desktopConnectorData[index];
+        path.setAttribute('d', compact ? mobilePaths[index] : original.path);
+        text.setAttribute('x', compact ? mobileLabels[index][0] : original.x);
+        text.setAttribute('y', compact ? mobileLabels[index][1] : original.y);
+      });
+    }
+    mobile.addEventListener('change', layoutMap);
+    layoutMap();
+    selectFlow('overview');
+  </script>
+</body>
+</html>
