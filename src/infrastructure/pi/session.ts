@@ -1,12 +1,15 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { InMemoryCredentialStore, InMemoryModelsStore, Type } from '@earendil-works/pi-ai';
+import { Type } from '@earendil-works/pi-ai';
 import {
-  createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
+  createAgentSession, createExtensionRuntime, SessionManager, SettingsManager,
   type AgentSession, type ResourceLoader, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Conversation, Message } from '../../contracts';
 import type { AgentInput, ExecuteTool } from '../../domains/conversation/agent';
+import { ModelConfigurationError, type ModelProfile } from '../../domains/models/model';
+import { environmentProfile } from '../models/environment';
+import { createModelRuntime, modelFailure, type ResolveModelCredential } from './models';
 import type { AgentSetup } from './protocol';
 
 interface Turn {
@@ -19,6 +22,8 @@ const TURN_ENTRY = 'orbit.interaction-turn.v1';
 export class PiSession {
   private manager: SessionManager;
   private session?: AgentSession;
+  private authorize?: () => Promise<void>;
+  private configuring = false;
   private active?: AgentInput;
   private stopped = false;
   private finishing?: Promise<void>;
@@ -45,43 +50,29 @@ export class PiSession {
     this.refreshMessages();
   }
 
-  static async open(setup: AgentSetup, execute: ExecuteTool, changed: (state: Conversation) => void, env = process.env): Promise<PiSession> {
+  static async open(setup: AgentSetup, execute: ExecuteTool, changed: (state: Conversation) => void, env = process.env,
+    credential: ResolveModelCredential = async () => env.ORBIT_AGENT_API_KEY ? { apiKey: env.ORBIT_AGENT_API_KEY } : undefined,
+  ): Promise<PiSession> {
     const runtime = new PiSession(setup, execute, changed);
-    await runtime.configure(env);
+    const previousError = runtime.state.error;
+    try {
+      await runtime.configure(setup.model === undefined ? environmentProfile(env) : setup.model, credential);
+      runtime.state.error = previousError;
+    }
+    catch (error) { runtime.state.error = modelFailure(error); }
     return runtime;
   }
 
-  private async configure(env: NodeJS.ProcessEnv): Promise<void> {
-    const modelId = env.ORBIT_AGENT_MODEL?.trim();
-    const baseUrl = env.ORBIT_AGENT_BASE_URL?.trim();
-    const provider = baseUrl ? 'orbit' : env.ORBIT_AGENT_PROVIDER?.trim();
-    if (!modelId || !provider) return;
+  async configure(profile: ModelProfile | null, credential: ResolveModelCredential): Promise<void> {
+    if (this.active || this.configuring) throw new ModelConfigurationError('请等待当前回复或模型操作结束，或先停止回复。');
+    this.configuring = true;
     try {
-      const models = await ModelRuntime.create({
-        credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(),
-        modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
-      });
-      if (baseUrl) {
-        const url = new URL(baseUrl);
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('模型服务地址必须是 HTTP 或 HTTPS 地址，密钥请单独配置。');
-        if (!env.ORBIT_AGENT_API_KEY) throw new Error('请配置文字对话的模型密钥。');
-        const contextWindow = Number(env.ORBIT_AGENT_CONTEXT_WINDOW ?? 32768);
-        const maxTokens = Number(env.ORBIT_AGENT_MAX_TOKENS ?? 4096);
-        if (!Number.isSafeInteger(contextWindow) || !Number.isSafeInteger(maxTokens) || maxTokens < 1 || contextWindow <= maxTokens) {
-          throw new Error('模型上下文窗口和最大输出长度配置无效。');
-        }
-        models.registerProvider(provider, {
-          baseUrl, api: 'openai-completions', apiKey: '$ORBIT_AGENT_API_KEY',
-          models: [{ id: modelId, name: modelId, reasoning: false, input: ['text'], contextWindow, maxTokens,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            compat: { supportsDeveloperRole: false, supportsStore: false, maxTokensField: 'max_tokens' },
-          }],
-        });
+      if (!profile) {
+        this.session?.dispose(); this.session = undefined; this.authorize = undefined;
+        this.state = { ...this.state, configured: false, model: undefined, error: undefined };
+        this.emit(); return;
       }
-      if (env.ORBIT_AGENT_API_KEY) await models.setRuntimeApiKey(provider, env.ORBIT_AGENT_API_KEY);
-      const model = models.getModel(provider, modelId);
-      if (!model) throw new Error('未找到配置的模型，请检查服务商和模型名称。');
-      if (!models.hasConfiguredAuth(provider) && !await models.checkAuth(provider)) throw new Error('请配置文字对话的模型密钥。');
+      const { runtime: models, model } = await createModelRuntime(profile, credential);
       const extensionRuntime = createExtensionRuntime();
       // Host-owned resources: no implicit ~/.pi, project instructions, skills or extensions.
       const resourceLoader: ResourceLoader = {
@@ -107,18 +98,25 @@ export class PiSession {
           return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
         },
       }));
+      const settingsManager = SettingsManager.inMemory({
+        compaction: { enabled: true }, cacheWarming: 'off',
+        retry: { enabled: true, maxRetries: 2, provider: { timeoutMs: 120_000, maxRetries: 1 } },
+      });
+      settingsManager.setTransport('sse');
       const { session } = await createAgentSession({
         cwd: this.setup.directory, agentDir: this.setup.directory, model, modelRuntime: models,
         sessionManager: this.manager, resourceLoader, thinkingLevel: 'off',
         tools: this.setup.tools.map(tool => tool.name), customTools,
-        settingsManager: SettingsManager.inMemory({
-          compaction: { enabled: true }, cacheWarming: 'off',
-          retry: { enabled: true, maxRetries: 2, provider: { timeoutMs: 120_000, maxRetries: 1 } },
-        }),
+        settingsManager,
       });
+      this.session?.dispose();
       this.session = session;
+      this.authorize = async () => {
+        if (!await models.getAuth(model)) throw new ModelConfigurationError('模型凭据不可用，请检查配置。');
+      };
       this.state.configured = true;
-      this.state.model = `${provider}/${modelId}`;
+      this.state.model = `${profile.providerId}/${profile.modelId}`;
+      this.state.error = undefined;
       session.subscribe(event => {
         // abort() can arrive during prompt preflight, before Pi creates its run controller.
         if (event.type === 'agent_start' && this.stopped) void session.abort();
@@ -136,9 +134,9 @@ export class PiSession {
         }
         // A low-level agent_end can be followed by retries. send() waits for prompt completion.
       });
-    } catch (error) {
-      this.state.error = error instanceof Error ? error.message : '模型初始化失败。';
-    }
+      this.emit();
+    } catch (error) { throw new ModelConfigurationError(modelFailure(error)); }
+    finally { this.configuring = false; }
   }
 
   private record(turn: Turn): void {
@@ -173,7 +171,7 @@ export class PiSession {
   private emit(): void { this.changed(this.read()); }
 
   async send(input: AgentInput): Promise<void> {
-    if (this.active) throw new Error('请等待当前回复，或先停止回复。');
+    if (this.active || this.configuring) throw new Error('请等待当前回复或模型操作结束，或先停止回复。');
     if (!this.session) throw new Error(this.state.error ?? '请先配置文字对话的模型服务。也可以选择仅保存需求。');
     const previous = this.turns.get(input.requestId);
     if (previous) {
@@ -181,25 +179,29 @@ export class PiSession {
       // A retry never replays a possibly committed business action, including after a crash.
       if (this.state.messages.some(message => message.requestId === input.requestId)) return;
     }
-    this.record({ input, status: 'running' });
     this.active = input; this.stopped = false;
     this.finishing = new Promise(resolve => { this.finish = resolve; });
     this.state = { ...this.state, status: 'running', draft: '', error: undefined };
     this.emit();
     const prompt = input.text || '请先帮助我明确这些附件的用途。';
     const attachmentInfo = input.attachments.length ? `\n\nOrbit 附件元信息（仅元信息，内容尚未解析）：\n${JSON.stringify(input.attachments.map(({ id, name, size }) => ({ id, name, size })))}` : '';
+    let recorded = false;
     try {
+      // Re-read local credentials before accepting input. Expired login leaves the draft intact.
+      await this.authorize?.();
+      if (this.stopped) throw new Error('回复已停止。');
+      this.record({ input, status: 'running' }); recorded = true;
       await this.session.prompt(prompt + attachmentInfo, { expandPromptTemplates: false });
       await this.session.waitForIdle();
-    } catch {
-      if (!this.stopped) this.state.error = '模型回复失败，请检查模型配置或连接后再发送。';
+    } catch (error) {
+      if (!this.stopped) this.state.error = modelFailure(error);
       this.refreshMessages();
       // Rejected preflight has not accepted a user message or invoked business tools.
       if (!this.state.messages.some(message => message.requestId === input.requestId)) throw new Error(this.state.error ?? '回复已停止，输入尚未发送。');
     } finally {
       if (this.stopped) this.state.error = '已停止回复。已保存的需求会保留。';
       try {
-        this.record({ input, status: this.stopped ? 'interrupted' : this.state.error ? 'failed' : 'complete', error: this.state.error });
+        if (recorded) this.record({ input, status: this.stopped ? 'interrupted' : this.state.error ? 'failed' : 'complete', error: this.state.error });
       } catch { this.state.error = '对话保存失败，请检查本机可用空间后重启。已创建的任务请在任务页核对。'; }
       this.active = undefined; this.state.status = 'idle'; this.state.draft = '';
       this.refreshMessages(); this.emit();

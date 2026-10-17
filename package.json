@@ -13,7 +13,7 @@
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "test:desktop": "node scripts/smoke.mjs",
+    "test:desktop": "node scripts/smoke.mjs && node scripts/model-smoke.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "setup:voice": "node scripts/setup-voice.mjs"
   },

@@ -14,11 +14,14 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 | `src/desktop` | 窗口、菜单、文件选择、权限、受限 IPC、Agent 子进程入口 | 主进程持有业务服务，独立进程运行 Pi |
 | `src/application/interaction.ts` | 交互身份、业务工具定义、附件范围和输入校验 | 不依赖 Pi 的类型或内部实现 |
 | `src/application/workspace.ts` | 需求保存、附件与工作空间视图 | 业务事务和任务回执 |
+| `src/application/models.ts` | 多配置管理、显式选择、切换与持久化回滚 | 不依赖 Electron 或 Pi SDK |
+| `src/domains/models` | provider 注册、配置验证、对外 DTO 和内部端口 | API 配置与本地 Codex 登录分开建模 |
 | `src/domains/conversation` | Agent 运行接口、输入和工具契约、系统回执 | 不绑定具体 SDK 或模型供应商 |
 | `src/domains/tasks` | 任务、校验、请求去重、待派发取消 | 当前支持本地需求管理 |
 | `src/domains/materials` | 附件副本和元信息 | 内容解析尚未接入 |
 | `src/domains/voice` | Qwen WebSocket 会话、本地关键词检测 | 查询任务和保存需求两个工具 |
 | `src/infrastructure/pi` | SDK 适配、进程协议、会话恢复、模型配置与事件投影 | 消费官方 SDK，不复制或修改 Pi 内核 |
+| `src/infrastructure/models` | 原子配置文件、系统密钥保护、Codex 只读凭据、环境兼容 | 凭据读取和持久化留在主进程 |
 | `src/infrastructure/database.ts` | SQLite 初始化与事务 | 业务状态规则由领域负责 |
 | `src/contracts.ts` | 可序列化的客户端应用接口 | 不向界面传递密钥、Pi 对象或本机文件路径 |
 
@@ -39,6 +42,7 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 - **Pi 自定义条目**：保存 Orbit 请求标识、输入及附件关联、轮次状态。相同标识的不同内容会拒绝；已接收轮次不会在网络重试或重启后自动重放。
 - **SQLite**：保存业务任务、系统回执和附件元信息。业务工具以会话标识和请求标识生成稳定的去重键，每轮最多创建一项需求。任务与回执在一个事务提交。
 - **文件副本**：由资料领域管理。模型目前只接收附件名称、大小和标识，不能读取内容；工具只能关联这段对话已经提供的附件。
+- **模型配置**：`models.json` 保存配置、active ID 和系统加密后的 API key；Codex token 只从用户文件按需读取，不复制、不刷新、不回写。配置文件存在后不再自动使用环境变量。
 - **异常恢复**：进程崩溃会结束界面的运行状态，下一次访问重建进程并恢复原会话。未确认结束的轮次标记中断，保留已提交任务，不自动重新执行。
 - **停止与退出**：停止按钮中断当前回复，不取消已保存的业务任务。应用退出先中断并关闭 Agent，再关闭数据库。关闭 macOS 窗口仍保留应用。
 
@@ -48,7 +52,9 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 
 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-ai` 固定为 1.3.0。Pi SDK 作为 ESM 依赖运行在独立 worker，构建脚本保留包自身的运行资源；不把 Pi 打入网页，也不另装 CLI。最低 Node.js 版本为 22.19。
 
-通过 `ResourceLoader` 明确提供资源，不读取外部扩展、技能、MCP 或项目规则。当前工具白名单只有 `list_tasks` 和 `save_request`。资源配置、凭据与会话目录独立于用户的 `~/.pi`；凭据来自环境变量，仅在进程内使用。
+通过 `ResourceLoader` 明确提供资源，不读取外部扩展、技能、MCP 或项目规则。当前工具白名单只有 `list_tasks` 和 `save_request`。资源配置、凭据与会话目录独立于用户的 `~/.pi`。主进程管理模型配置和凭据，worker 通过内部 RPC 按需获取 API key 或有效 Codex access token；不把借用的登录放入 Pi OAuth 存储。
+
+PR1 支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 和本地 Codex ChatGPT 登录。回复中禁止配置变更，空闲切换复用 Pi `SessionManager` 保留历史。连接测试使用无工具的单次调用，不创建会话或任务。`window.orbit.models` 为 PR2 提供配置、模型目录、检测、测试和激活接口；当前未修改模型设置 UI。详细约束与示例见 [模型配置文档](MODEL_PROVIDERS.md)。
 
 会话启用 Pi 自带压缩和有限重试，关闭空闲缓存预热。界面使用最终消息覆盖流式草稿；不把低层 `agent_end` 当成整个回复或业务任务已经完成。模型调用和上下文管理归 Pi，业务工具与任务状态机归 Orbit。
 
@@ -69,8 +75,8 @@ Electron 渲染进程使用 context isolation 和 sandbox，禁用 Node integrat
 
 ## 验证
 
-`npm run check`：类型检查、离线测试、网页与 Electron 构建。新增测试使用真实 Pi SDK 和本机 HTTP 模型桩，覆盖流式输出、工具白名单、业务去重、附件范围、上下文恢复、中断、服务错误和子进程崩溃。
+`npm run check`：类型检查、离线测试、网页与 Electron 构建。测试使用真实 Pi SDK 和本机 HTTP 模型桩，覆盖流式输出、工具白名单、业务去重、附件范围、上下文恢复、中断、服务错误、子进程崩溃，以及模型配置加密、优先级、回滚、五种 provider 协议和 Codex 只读轮换。
 
-`npm run test:desktop`：在临时目录中启动真实 Electron 和 Pi worker，通过本机模型桩验证聊天、业务工具、任务取消、重启会话恢复、停止回复和语音设置。截图输出到已忽略的 `artifacts/`。这些测试不产生真实模型用量，也不证明某个云端模型的实际推理质量。
+`npm run test:desktop`：在临时目录中启动真实 Electron 和 Pi worker，通过本机模型桩验证聊天、业务工具、任务取消、重启会话恢复、停止回复、语音设置和模型配置 IPC / 系统加密 / 切换。截图输出到已忽略的 `artifacts/`。这些测试不产生真实模型用量，也不证明某个云端模型的实际推理质量或账号访问权限。
 
 `node scripts/voice-smoke.mjs` 是单独运行的 Qwen 联网验证，使用本地 `.env` 和模拟麦克风，会产生少量 API 用量。

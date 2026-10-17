@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { RealtimeVoice } from '../domains/voice/realtime';
 import { WakeDetector } from '../domains/voice/wake';
 import type { Conversation, VoiceEvent } from '../contracts';
-import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, shell, utilityProcess } from 'electron';
+import { systemPreferences, app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell, utilityProcess } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +12,11 @@ import { MaterialLibrary } from '../domains/materials/library';
 import { WorkspaceService } from '../application/workspace';
 import { InteractionService, INTERACTION_PROMPT, INTERACTION_TOOLS } from '../application/interaction';
 import { PiAgentHost } from '../infrastructure/pi/host';
+import { ModelConfigurationService } from '../application/models';
+import { ModelConfigurationError } from '../domains/models/model';
+import { LocalCodexCredentials } from '../infrastructure/models/codex';
+import { environmentProfile } from '../infrastructure/models/environment';
+import { FileModelRepository, protectedSecrets } from '../infrastructure/models/store';
 
 try { loadEnvFile(resolve(__dirname, '../.env')); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 app.setName('Orbit');
@@ -33,6 +38,7 @@ app.whenReady().then(() => {
   const emitConversation = (state: Conversation) => {
     if (window && !window.isDestroyed()) window.webContents.send('conversation:state', state);
   };
+  let models: ModelConfigurationService;
   const agent = new PiAgentHost(() => {
     const child = utilityProcess.fork(join(__dirname, 'agent-worker.mjs'), [], { serviceName: 'Orbit interaction agent', stdio: 'ignore' });
     return {
@@ -42,7 +48,14 @@ app.whenReady().then(() => {
       kill: () => { child.kill(); },
     };
   }, { directory: join(dataDir, 'agent'), systemPrompt: INTERACTION_PROMPT, tools: INTERACTION_TOOLS },
-  (name, args, context) => interaction.execute(name, args, context), emitConversation);
+  (name, args, context) => interaction.execute(name, args, context), emitConversation,
+  { current: () => models.current(), credential: id => models.credential(id) });
+  models = new ModelConfigurationService(
+    new FileModelRepository(join(dataDir, 'models.json')), protectedSecrets(safeStorage),
+    new LocalCodexCredentials(), agent,
+    { profile: environmentProfile(process.env), apiKey: process.env.ORBIT_AGENT_API_KEY },
+    state => { if (window && !window.isDestroyed()) window.webContents.send('models:state', state); },
+  );
   const handle = (channel: string, action: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
@@ -52,6 +65,17 @@ app.whenReady().then(() => {
       return action(...args);
     });
   };
+  const modelHandle = (channel: string, action: (...args: unknown[]) => unknown) => handle(channel, async (...args) => {
+    try { return await action(...args); }
+    catch (error) { throw new Error(error instanceof ModelConfigurationError ? error.message : '模型配置操作失败，请重试。'); }
+  });
+  modelHandle('models:read', () => models.read());
+  modelHandle('models:catalog', id => models.catalog(id));
+  modelHandle('models:save', input => models.save(input));
+  modelHandle('models:remove', id => models.remove(id));
+  modelHandle('models:activate', id => models.activate(id));
+  modelHandle('models:detect-codex', () => models.detectCodex());
+  modelHandle('models:test', id => models.test(id));
   const emitVoice = (event: VoiceEvent) => { if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
   const voice = new RealtimeVoice(emitVoice, (name, args) => {
     if (name === 'list_tasks') return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
@@ -83,7 +107,7 @@ app.whenReady().then(() => {
   app.on('before-quit', stopVoice);
   handle('workspace:read', () => workspace.snapshot());
   handle('conversation:read', () => agent.read());
-  handle('conversation:send', input => agent.send(interaction.prepare(input)));
+  handle('conversation:send', input => { models.assertCanSend(); return agent.send(interaction.prepare(input)); });
   handle('conversation:abort', () => agent.abort());
   handle('workspace:submit', input => workspace.submit(input));
   handle('task:cancel', id => workspace.cancelTask(id));

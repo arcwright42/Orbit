@@ -1,4 +1,5 @@
 // Serializable application DTOs. Renderer never imports persistence or runtime code.
+import type { ModelsApi } from './domains/models/model';
 export interface Attachment {
   id: string;
   name: string;
@@ -50,6 +51,7 @@ export interface Conversation {
 }
 
 export interface OrbitApi {
+  models: ModelsApi;
   conversation(): Promise<Conversation>;
   sendMessage(input: SubmitRequest): Promise<void>;
   stopReply(): Promise<void>;
