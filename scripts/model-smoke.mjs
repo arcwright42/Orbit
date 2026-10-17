@@ -1,4 +1,4 @@
-import { _electron as electron } from '@playwright/test';
+import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -58,7 +58,7 @@ try {
   await page.evaluate(() => {
     window.modelSmokeRun = window.orbit.sendMessage({ requestId: 'models-slow-turn', text: '慢回复', attachmentIds: [] }).catch(error => error.message);
   });
-  await page.waitForFunction(async () => (await window.orbit.conversation()).draft.length > 0);
+  await expect.poll(async () => (await page.evaluate(() => window.orbit.conversation())).draft.length).toBeGreaterThan(0);
   for (const operation of ['activate', 'remove', 'test']) {
     const message = await page.evaluate(async ({ operation, id }) => {
       try { await window.orbit.models[operation](id); return 'unexpected success'; } catch (error) { return error.message; }

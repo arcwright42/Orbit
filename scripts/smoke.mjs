@@ -1,4 +1,4 @@
-import { _electron as electron } from '@playwright/test';
+import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,7 +18,7 @@ try {
   let page = await app.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('textbox', { name: '你的需求' }).waitFor();
-  await page.waitForFunction(async () => (await window.orbit.conversation()).configured);
+  await expect.poll(async () => (await page.evaluate(() => window.orbit.conversation())).configured).toBe(true);
   await page.screenshot({ path: 'artifacts/orbit-home.png' });
   await page.getByRole('textbox', { name: '你的需求' }).fill('你好');
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
@@ -67,7 +67,7 @@ try {
   assert.equal((await page.evaluate(() => window.orbit.conversation())).configured, false);
   await page.getByRole('textbox', { name: '你的需求' }).fill('仅离线保存的需求');
   await page.getByRole('button', { name: '仅保存需求', exact: true }).click();
-  await page.waitForFunction(async () => (await window.orbit.workspace()).tasks.length === 2);
+  await expect.poll(async () => (await page.evaluate(() => window.orbit.workspace())).tasks.length).toBe(2);
   assert.ok(await page.getByRole('button', { name: '发送消息', exact: true }).isDisabled());
   assert.deepEqual(errors, []);
   console.log('Desktop smoke passed: real Pi worker, streamed chat, business tools, task cancellation, session restoration, abort, unconfigured fallback, voice settings; no renderer errors.');

@@ -109,7 +109,7 @@ export class ModelConfigurationService {
       if (!existing && document.profiles.length >= 100) throw new ModelConfigurationError('最多保存 100 套模型配置。');
       const { profile, apiKey } = validateProfile(value, id);
       if (!providerDefinition(profile.providerId).manualModel && !(await this.runtime.catalog(profile.providerId)).some(model => model.id === profile.modelId)) {
-        throw new ModelConfigurationError('模型不在当前 SDK 目录中，请选择目录中的模型。');
+        throw new ModelConfigurationError('模型不在当前支持目录中，请重新选择模型。');
       }
       const sameDestination = existing?.profile.source === profile.source && existing?.profile.providerId === profile.providerId && existing?.profile.baseUrl === profile.baseUrl;
       const encryptedApiKey = apiKey !== undefined ? this.secrets.encrypt(apiKey) : sameDestination ? existing?.encryptedApiKey : undefined;

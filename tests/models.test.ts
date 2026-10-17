@@ -179,7 +179,7 @@ test('input validation constrains sources, endpoints and model catalogs', async 
     await assert.rejects(f.service.save({ ...custom, maxTokens: 999999 }), /上下文窗口/);
     await assert.rejects(f.service.save({ ...custom, source: 'codex-local' }), /不匹配/);
     await assert.rejects(f.service.save({ ...custom, providerId: 'anthropic' }), /预设/);
-    await assert.rejects(f.service.save({ name: 'bad model', source: 'api', providerId: 'openai', modelId: 'not-in-catalog', apiKey: 'fake' }), /SDK 目录/);
+    await assert.rejects(f.service.save({ name: 'bad model', source: 'api', providerId: 'openai', modelId: 'not-in-catalog', apiKey: 'fake' }), /支持目录/);
     assert.throws(() => f.service.catalog('unsupported'), /不支持/);
     const result = await f.service.save({ name: 'OpenAI', source: 'api', providerId: 'openai', modelId: 'catalog-model', apiKey: 'fake' });
     assert.equal(result.profiles[0].providerId, 'openai');

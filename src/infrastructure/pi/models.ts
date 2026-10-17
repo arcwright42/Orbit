@@ -1,7 +1,7 @@
 import { InMemoryCredentialStore, InMemoryModelsStore, type Provider } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { ModelConfigurationError, type ModelCredential, type ModelOption, type ModelProfile } from '../../domains/models/model';
-import { validateProfile } from '../../domains/models/providers';
+import { modelUnavailableReason, validateProfile } from '../../domains/models/providers';
 
 export type ResolveModelCredential = (id: string) => Promise<ModelCredential | undefined>;
 const emptyRuntime = () => ModelRuntime.create({
@@ -13,10 +13,14 @@ let catalogRuntime: Promise<ModelRuntime> | undefined;
 export async function modelCatalog(providerId: string): Promise<ModelOption[]> {
   if (providerId === 'custom') return [];
   catalogRuntime ??= emptyRuntime();
-  return (await catalogRuntime).getModels(providerId).map(({ id, name, contextWindow, maxTokens }) => ({ id, name, contextWindow, maxTokens }));
+  return (await catalogRuntime).getModels(providerId)
+    .filter(model => !modelUnavailableReason(providerId, model.id))
+    .map(({ id, name, contextWindow, maxTokens }) => ({ id, name, contextWindow, maxTokens }));
 }
 
 export async function createModelRuntime(profile: ModelProfile, credential: ResolveModelCredential) {
+  const unavailable = modelUnavailableReason(profile.providerId, profile.modelId);
+  if (unavailable) throw new ModelConfigurationError(unavailable);
   const runtime = await emptyRuntime();
   if (profile.providerId === 'custom') {
     const { profile: custom } = validateProfile(profile, profile.id);

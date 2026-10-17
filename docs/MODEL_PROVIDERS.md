@@ -14,7 +14,9 @@ PR1 实现文字模型配置后端和 IPC 接口；PR2 再接设置页面。Pi �
 
 预设 provider 使用固定官方端点，不接受 base URL 覆盖。OpenRouter 的目录中含 Anthropic 模型，适配时统一使用 OpenRouter 的 Chat Completions 协议。自定义服务使用文字、非推理模型描述，默认上下文 32,768、最大输出 4,096；地址不包含用户名、密码、查询参数、片段或 `/chat/completions`。
 
-同一 provider 可以保存多套配置，最多 100 套。目录来自锁定的 Pi SDK 1.3.0，不通过联网发现；目录存在不代表账号有模型使用权限，显式连接测试用于验证实际访问。
+同一 provider 可以保存多套配置，最多 100 套。目录来自锁定的 Pi SDK 1.3.0，不通过联网发现，并排除已确认退役的 Codex 订阅模型；目录存在不代表账号有模型使用权限，显式连接测试用于验证实际访问。
+
+2026-10-17 真实调用发现 SDK 仍收录 `gpt-5.5`，但服务端已拒绝其 ChatGPT 登录请求。Orbit 按 [官方模型退役说明](https://learn.chatgpt.com/docs/models#deprecated-codex-models) 过滤 Codex 来源中的已退役条目，并在激活旧配置时明确提示重新选择。旧配置仍可读取和修改，不自动换模型；此限制不影响 API 来源。
 
 Claude Code、本应用内 OAuth 登录、Codex keyring 读取、自动续期、自动挑选其他配置均不在 PR1 范围。
 
@@ -46,7 +48,7 @@ worker 每次需要凭据时通过内部 RPC 请求主进程。Codex token 剩�
 | `window.orbit.models` 方法 | 行为 |
 | --- | --- |
 | `read()` | 返回 provider 定义、配置视图、`activeProfileId` 和配置文件错误；每项只有 `hasApiKey`，不返回凭据。 |
-| `catalog(providerId)` | 返回 SDK 目录 `{ id, name, contextWindow, maxTokens }[]`；custom 返回空列表。 |
+| `catalog(providerId)` | 返回经支持策略筛选的 SDK 目录 `{ id, name, contextWindow, maxTokens }[]`；custom 返回空列表。 |
 | `save(input)` | 无 `id` 时新增；有 `id` 时编辑现有配置。返回配置状态，不自动激活。 |
 | `remove(id)` | 删除配置；删除 active 项同时清空选择。 |
 | `activate(id)` | 激活配置，或重新初始化同一配置。 |
@@ -80,3 +82,14 @@ Codex 配置选择 `source: 'codex-local'`、`providerId: 'openai-codex'`，从 
 `npm run check` 包括配置和凭据测试，以及真实 Pi SDK 对本机 HTTP 模型桩的五种 provider 协议测试、跨 provider 会话切换、错误与凭据轮换。测试把固定官方端点重定向至本机，拒绝其他网络请求；不改生产端点，不使用真实账户。
 
 `npm run test:desktop` 在已有桌面回归之外运行 `scripts/model-smoke.mjs`，通过真实 preload / IPC / utility worker 验证系统加密、多配置选择、测试无副作用、回复中拒绝切换、重启与 Codex 过期处理。使用临时 `CODEX_HOME` 和合成 token；不读取用户实际凭据。服务端真实订阅权限与模型可用性仍需用显式连接测试确认。
+
+真实 Codex 订阅验证单独运行：
+
+```sh
+npm run build
+node scripts/codex-live-smoke.mjs
+```
+
+该脚本使用本机 `CODEX_HOME/auth.json` 和真实订阅额度，默认模型为 `gpt-6.1-sol`，可用 `ORBIT_CODEX_SMOKE_MODEL` 指定当前目录中且账号可用的其他模型。它启动真实 Electron，通过 IPC 测试连接，通过聊天输入框验证流式回复、重启后上下文回忆和 `list_tasks` 工具结果。
+
+测试创建并清理独立的临时 Orbit 数据目录，不使用现有任务或会话；Codex 凭据只读、不复制，结束时核对文件摘要未变，并检查 Orbit 配置和会话没有写入 token。安全结果和测试对话截图输出到已忽略的 `artifacts/orbit-codex-live-result.json`、`artifacts/orbit-codex-live-chat.png`。此脚本不纳入 `npm test`、`check` 或 CI；不要在没有真实凭据和用量授权时运行。

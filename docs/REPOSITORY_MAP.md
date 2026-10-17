@@ -133,7 +133,7 @@ Pi 的调用循环、模型协议、上下文管理和会话能力来自安装�
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
 | [model.ts](../src/domains/models/model.ts) | `ModelProfile`、`ModelsApi`、`ModelConfigurationState` 和内部端口 | 定义 API / Codex 来源、配置视图、目录、检测和连接结果；对外写入参数与内部存储 / 凭据分开。声明配置仓储、密钥保护、Codex 读取与模型运行时端口。 |
-| [providers.ts](../src/domains/models/providers.ts) | `PROVIDERS`、`providerDefinition`、`validateProfile` | 注册支持的 provider、协议、凭据类型和端点能力；校验并重建可保存字段，限制来源匹配、模型 ID、自定义 URL、长度参数和密钥写入。 |
+| [providers.ts](../src/domains/models/providers.ts) | `PROVIDERS`、`providerDefinition`、`validateProfile`、`modelUnavailableReason` | 注册 provider、协议、凭据类型和端点能力；校验可保存字段；维护已确认的 Codex 订阅模型退役策略，供目录和激活流程共用，同时允许旧配置读取 / 编辑。 |
 
 ## 3. 主要调用链
 
@@ -245,10 +245,11 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [scripts/setup-voice.mjs](../scripts/setup-voice.mjs) | `npm run setup:voice` | 下载固定版本的关键词模型压缩包，校验 SHA-256，解压指定文件到 `assets/voice/`，清理临时目录。 |
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
 | [scripts/model-smoke.mjs](../scripts/model-smoke.mjs) | `npm run test:desktop` 的第二阶段 | 通过真实 preload / IPC 验证模型配置增删改查、系统加密、连接测试、切换和重启、回复中互斥；临时 Codex 文件用于检测、过期拒绝与只读验证。不调用真实云端模型。 |
+| [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron UI / IPC 测试连接、流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
 | [scripts/voice-smoke.mjs](../scripts/voice-smoke.mjs) | `node scripts/voice-smoke.mjs` | 显式联网验证：使用模拟麦克风和本机语音配置，检查真实 Qwen 会话、停止与本地唤醒初始化；保存语音界面截图。需要先构建、安装唤醒模型并准备 `artifacts/`。 |
 | [scripts/voice-roundtrip.mjs](../scripts/voice-roundtrip.mjs) | `node scripts/voice-roundtrip.mjs <wake.wav> <query.wav>` | 显式联网验证：输入两份单声道 16 kHz WAV，按实时速率注入唤醒词和提问，等待语音回复，输出转写 / 状态事件及音频块数量。需要已构建桌面、唤醒模型和 Qwen 配置。 |
 
-普通业务 / Pi 测试和桌面 smoke 使用本机模型桩，不消耗真实云端模型额度。两个 `voice-*` 验证脚本会调用真实语音 API，未纳入 `npm run check`。
+普通业务 / Pi 测试和 `npm run test:desktop` 使用本机模型桩，不消耗真实云端模型额度。`codex-live-smoke.mjs` 和两个 `voice-*` 验证脚本会调用真实服务，未纳入 `npm run check`。
 
 ### 5.4 依赖各自负责什么
 
@@ -285,7 +286,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [tests/agent.test.ts](../tests/agent.test.ts) | 真实 Pi SDK 对接本机模型桩，验证流式聊天、工具白名单、业务去重、上下文恢复、中断、服务错误、附件范围及未配置模型时保留输入。 |
 | [tests/agent-host.test.ts](../tests/agent-host.test.ts) | 通过真实 Node 子进程运行 worker，验证崩溃后恢复同一会话、不重放轮次、关闭时中断正在运行的回复。 |
 | [tests/models.test.ts](../tests/models.test.ts) | 多配置与密钥隔离、加密持久化、环境优先级、保存 / 切换失败回滚、回复中互斥、损坏文件保护、输入和目录验证、Codex 文件只读 / 轮换 / 过期。 |
-| [tests/model-runtime.test.ts](../tests/model-runtime.test.ts) | 真实 Pi SDK 的五种 provider 协议、请求鉴权、连接测试无会话、跨 provider 切换保留历史、Codex 轮换与过期不接受输入、错误脱敏及无 OAuth 刷新。 |
+| [tests/model-runtime.test.ts](../tests/model-runtime.test.ts) | 真实 Pi SDK 的五种 provider 协议、请求鉴权、连接测试无会话、跨 provider 切换保留历史、Codex 轮换与过期不接受输入、错误脱敏及无 OAuth 刷新；订阅退役过滤不影响 API 模型或旧配置修复。 |
 | [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证会话就绪前不发音频、只执行完成响应中的工具、停止后的旧会话事件不会影响新会话。 |
 | [tests/fixtures/model-server.ts](../tests/fixtures/model-server.ts) | 本机 HTTP Chat Completions 流式模型桩；提供问候、任务工具、重复 / 非法工具、慢回复及失败场景，同时记录请求供断言使用。被 Pi 测试与桌面 smoke 复用。 |
 | [tests/fixtures/provider-server.ts](../tests/fixtures/provider-server.ts) | 本机 Responses、Codex Responses、Anthropic Messages 和 Chat Completions SSE 协议桩，接收 Codex zstd 请求并记录测试请求。 |

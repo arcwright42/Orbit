@@ -8,6 +8,17 @@ export const PROVIDERS: readonly ProviderDefinition[] = [
   { id: 'openai-codex', name: '本地 Codex 登录', source: 'codex-local', protocol: 'openai-codex-responses', customEndpoint: false, manualModel: false },
 ];
 
+// Pi 1.3.0's bundled catalog predates these ChatGPT-sign-in retirements.
+// Verified 2026-10-17: https://learn.chatgpt.com/docs/models#deprecated-codex-models
+// This policy does not restrict the OpenAI API provider or custom endpoints.
+const RETIRED_CODEX_MODELS = new Set(['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'gpt-5.3-codex', 'gpt-5.2']);
+export function modelUnavailableReason(providerId: string, modelId: string): string | undefined {
+  if (providerId === 'openai-codex' && RETIRED_CODEX_MODELS.has(modelId)) {
+    return '该模型已停止支持 Codex 的 ChatGPT 登录，请重新选择模型；原配置和对话仍然保留。';
+  }
+  return undefined;
+}
+
 export function providerDefinition(id: unknown): ProviderDefinition {
   const provider = PROVIDERS.find(item => item.id === id);
   if (!provider) throw new ModelConfigurationError('不支持该模型服务。');

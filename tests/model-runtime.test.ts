@@ -11,6 +11,19 @@ import { INTERACTION_PROMPT, INTERACTION_TOOLS } from '../src/application/intera
 import { createProviderServer } from './fixtures/provider-server';
 import { codexToken } from './fixtures/codex-auth';
 import type { Message } from '../src/contracts';
+import { validateProfile } from '../src/domains/models/providers';
+
+test('retired subscription models are excluded without breaking API access or stored-profile repair', async () => {
+  const catalog = await modelCatalog('openai-codex');
+  assert.ok(catalog.some(model => model.id === 'gpt-6.1-sol'));
+  assert.ok(!catalog.some(model => ['gpt-5.5', 'gpt-5.3-codex-spark'].includes(model.id)));
+  assert.ok((await modelCatalog('openai')).some(model => model.id === 'gpt-5.5'));
+  const profile: ModelProfile = { id: 'retired-profile', name: 'Legacy Codex', source: 'codex-local', providerId: 'openai-codex', modelId: 'gpt-5.5' };
+  assert.equal(validateProfile(profile, profile.id).profile.modelId, 'gpt-5.5'); // Existing documents remain readable/editable.
+  let credentialsRead = false;
+  await assert.rejects(createModelRuntime(profile, async () => { credentialsRead = true; return undefined; }), /停止支持/);
+  assert.equal(credentialsRead, false);
+});
 
 test('real Pi transports use each provider protocol, read-only Codex auth, and retain history across switches', { timeout: 30_000 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'orbit-provider-test-'));

@@ -81,6 +81,8 @@ npm run test:desktop
 
 桌面测试需要图形会话，使用临时数据目录和本机 HTTP 模型桩，运行真实 Pi SDK 与独立进程，覆盖聊天、业务工具、任务取消、会话恢复、停止回复、语音设置，以及模型配置 IPC、系统密钥加密、模型切换、重启和 Codex 只读凭据。不调用真实云端模型，不读取用户实际 Codex 凭据。截图输出到已忽略的 `artifacts/`。
 
+显式运行 `node scripts/codex-live-smoke.mjs` 可用本机 Codex 登录做真实端到端验证（需先构建）。它使用隔离的 Orbit 数据目录，验证连接、流式回复、重启续聊和任务查询工具，会消耗少量订阅额度。默认 `gpt-6.1-sol`，可通过 `ORBIT_CODEX_SMOKE_MODEL` 指定账号可用模型；不会修改 Codex 登录文件。详见 [模型配置文档](docs/MODEL_PROVIDERS.md#验证)。
+
 首版使用 TypeScript 快速开发。采用职责清晰的模块化设计，按实际用例接入所需能力，再逐步优化和迭代。
 
 ## 实时语音与本地唤醒
