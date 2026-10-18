@@ -1,6 +1,20 @@
-# 模型配置与 Provider 接入（PR1）
+# 模型配置与 Provider 接入
 
-PR1 实现文字模型配置后端和 IPC 接口；PR2 再接设置页面。Pi 继续负责 Agent 循环、流式协议、工具调用和上下文，Orbit 负责配置选择、凭据及业务规则。Qwen 实时语音配置独立。
+Provider PR1 实现文字模型配置后端和 IPC 接口；Provider UI PR2 接入设置页面。Pi 继续负责 Agent 循环、流式协议、工具调用和上下文，Orbit 负责配置选择、凭据及业务规则。Qwen 实时语音配置独立。
+
+## 设置页面（Provider UI PR2）
+
+从主入口输入框下方的“配置模型 / 模型设置”，或“设置 → 模型配置”进入。
+
+- 顶部显示当前文字模型；下方配置卡片显示服务、模型、凭据来源与状态。同一服务支持多套命名配置。
+- “添加配置”先选 API 密钥或本地订阅。预设服务提供可搜索目录；兼容服务填写 API 前缀、模型 ID 和可选容量。本地订阅目前仅支持 Codex 的 ChatGPT 文件登录，登录 / 续期仍在 Codex 完成。
+- “保存并启用”先保存再显式激活；激活失败保留已保存配置并提示重试，不产生重复配置。“仅保存”不改变已有应用配置的当前选择；首次从环境来源保存时遵循下文的环境迁移规则。
+- “测试连接”独立发送一个简短请求，显示结果和耗时，不改变当前选择或历史。检测到本地登录仅代表文件格式及有效期通过；模型权限需用连接测试验证。
+- 密钥使用密码输入且不回显。编辑时留空保留同一来源 / 服务 / 地址的密钥；更换服务或地址需要新密钥。环境来源只读，不能在 UI 编辑、删除或复制密钥。
+- 文字回复中禁止修改配置和测试，提供停止回复按钮。模型操作状态在 App 生命周期内保持，切换页面不会解除进行中的互斥；已保存配置、登录失效条目和目录中移除的模型仍可查看和修复。读取损坏的配置时禁用写入，保留原文件。
+- 删除前在卡片内确认；删除当前配置会停用文字对话，历史保留。Qwen 语音配置独立。
+
+参考 OpenClaw 的 [Control UI 与凭据说明](https://docs.openclaw.ai/concepts/model-providers/control-ui-and-keys)，并核对固定提交 `fb30c2ed68d2a57cfa86f94a37153b0279fa0bd1` 中的 [Provider 页面](https://github.com/openclaw/openclaw/blob/fb30c2ed68d2a57cfa86f94a37153b0279fa0bd1/ui/src/pages/model-providers/view.tsx)、[异步测试状态管理](https://github.com/openclaw/openclaw/blob/fb30c2ed68d2a57cfa86f94a37153b0279fa0bd1/ui/src/pages/model-providers/profile-actions-controller.ts) 和 [来源选择](https://github.com/openclaw/openclaw/blob/fb30c2ed68d2a57cfa86f94a37153b0279fa0bd1/ui/src/pages/model-setup/provider-picker.tsx)。复用当前模型与凭据分区、来源可见但密钥不可见、显式探测及迟到结果隔离这些交互机制；以 Orbit 的 React / IPC 契约实现，没有导入 OpenClaw 包或复制组件。
 
 ## 支持范围
 
@@ -41,7 +55,7 @@ worker 每次需要凭据时通过内部 RPC 请求主进程。Codex token 剩�
 5. 初始化目标模型成功后持久化选择；失败保留原配置，并尝试恢复原运行时。原凭据也失效时解除运行时绑定，修复后重新激活，不继续使用尚未保存的目标配置。删除 active profile 后变为未配置，历史和“仅保存需求”仍可用。
 6. 过期登录在接受新输入前拒绝，不追加用户消息或调用业务工具。连接测试发送一次简短提示，不挂载工具、不创建 Pi 会话、不写聊天或业务任务，不改变 active profile。显式调用连接测试会产生对应模型的少量用量。
 
-## 给 PR2 的接口
+## UI 使用的接口
 
 类型定义在 [`domains/models/model.ts`](../src/domains/models/model.ts)，通过 `OrbitApi.models` 暴露。所有请求仍经过主进程可信窗口 / 主 frame 校验和输入验证。
 
@@ -56,7 +70,7 @@ worker 每次需要凭据时通过内部 RPC 请求主进程。Codex token 剩�
 | `test(id)` | 测试已保存的配置，返回 `{ ok, message }`；不改变当前选择。 |
 | `onChanged(listener)` | 订阅保存 / 删除 / 激活后的配置状态，返回取消订阅函数。 |
 
-尚无模型设置页面，开发时可在应用开发者工具中调用接口，例如添加本机兼容服务：
+正常配置使用设置页面；开发调试时也可在应用开发者工具中调用接口，例如添加本机兼容服务：
 
 ```js
 const state = await window.orbit.models.save({
@@ -69,7 +83,7 @@ await window.orbit.models.test(id);
 await window.orbit.models.activate(id);
 ```
 
-Codex 配置选择 `source: 'codex-local'`、`providerId: 'openai-codex'`，从 `catalog('openai-codex')` 取得模型 ID，不传 `apiKey` 或地址。API key 在 PR2 表单中应使用密码输入，编辑时留空表示省略字段。
+Codex 配置选择 `source: 'codex-local'`、`providerId: 'openai-codex'`，从 `catalog('openai-codex')` 取得模型 ID，不传 `apiKey` 或地址。API key 在表单中使用密码输入，编辑时留空会省略字段。
 
 ## 包边界与参考
 
@@ -83,6 +97,8 @@ Codex 配置选择 `source: 'codex-local'`、`providerId: 'openai-codex'`，从 
 
 `npm run test:desktop` 在已有桌面回归之外运行 `scripts/model-smoke.mjs`，通过真实 preload / IPC / utility worker 验证系统加密、多配置选择、测试无副作用、回复中拒绝切换、重启与 Codex 过期处理。使用临时 `CODEX_HOME` 和合成 token；不读取用户实际凭据。服务端真实订阅权限与模型可用性仍需用显式连接测试确认。
 
+`scripts/model-ui-smoke.mjs` 另外通过真实 UI 表单、目录、按钮和状态消息验证配置全流程，包含保存成功 / 启用失败、保留密钥、异步操作跨页面持续、异常登录修复、只读环境来源和损坏配置。
+
 真实 Codex 订阅验证单独运行：
 
 ```sh
@@ -90,6 +106,8 @@ npm run build
 node scripts/codex-live-smoke.mjs
 ```
 
-该脚本使用本机 `CODEX_HOME/auth.json` 和真实订阅额度，默认模型为 `gpt-6.1-sol`，可用 `ORBIT_CODEX_SMOKE_MODEL` 指定当前目录中且账号可用的其他模型。它启动真实 Electron，通过 IPC 测试连接，通过聊天输入框验证流式回复、重启后上下文回忆和 `list_tasks` 工具结果。
+该脚本使用本机 `CODEX_HOME/auth.json` 和真实订阅额度，默认模型为 `gpt-6.1-sol`，可用 `ORBIT_CODEX_SMOKE_MODEL` 指定当前目录中且账号可用的其他模型。它启动真实 Electron，通过模型设置 UI 添加本地订阅配置、测试连接并启用，通过聊天输入框验证流式回复、重启后上下文回忆和 `list_tasks` 工具结果。
 
 测试创建并清理独立的临时 Orbit 数据目录，不使用现有任务或会话；Codex 凭据只读、不复制，结束时核对文件摘要未变，并检查 Orbit 配置和会话没有写入 token。安全结果和测试对话截图输出到已忽略的 `artifacts/orbit-codex-live-result.json`、`artifacts/orbit-codex-live-chat.png`。此脚本不纳入 `npm test`、`check` 或 CI；不要在没有真实凭据和用量授权时运行。
+
+Provider UI 验收（2026-10-18）：`npm run check` 通过 25 个测试与类型检查 / 构建；四组 `npm run test:desktop` 全部通过。`codex-live-smoke.mjs` 使用本地真实 Codex 登录与 `gpt-6.1-sol`，通过新 UI 完成配置、连接测试和启用，验证流式回复、重启上下文回忆、业务工具及凭据文件未变。报告位于已忽略的 `artifacts/orbit-codex-live-result.json`。

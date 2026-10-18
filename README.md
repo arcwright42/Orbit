@@ -10,7 +10,7 @@
 | --- | --- |
 | [Repository Map · 源码地图](docs/REPOSITORY_MAP.md) | 每个模块和代码文件负责什么，主要调用链是什么，修改某项功能从哪里开始。 |
 | [架构与开发进度](docs/ARCHITECTURE.md) | 模块边界、状态归属、Pi SDK 接入方式、当前实现与下一步。 |
-| [模型配置与 Provider 接入](docs/MODEL_PROVIDERS.md) | PR1 支持的模型来源、配置优先级、凭据边界和供 PR2 使用的接口。 |
+| [模型配置与 Provider 接入](docs/MODEL_PROVIDERS.md) | 模型设置 UI、支持的来源、配置优先级、凭据边界和接口。 |
 | [Room 与共享历史](docs/ROOM_HISTORY.md) | Room / session 边界、文件存储、历史工具、上下文同步和两 PR 拆分。 |
 | [产品需求](docs/PRODUCT.md) | 产品定位、职责边界、目标交互、团队编排与验收场景，包含尚未实现的规划。 |
 | [业务链路 HTML · 历史快照](docs/orbit-business-flow.html) | 基于 `main@d3ee5e1` 的 Pi 接入前业务链路，可离线打开；当前实现以源码地图和架构文档为准。 |
@@ -39,7 +39,7 @@ npm start
 
 - Electron + React 桌面主入口、任务、文件和语音设置页面。
 - Pi Coding Agent SDK 1.3.0 驱动持续文字对话，支持流式回复、停止和重启恢复。
-- 模型配置后端：多套 API 配置、本地 Codex 登录复用、连接测试和空闲时切换。模型设置界面留到 PR2。
+- 模型配置页面：多套 API 配置、本地 Codex 登录复用、模型搜索、连接测试和空闲时切换。
 - Orbit 业务层定义交互职责及 `list_tasks`、`save_request`、`read_history`、`search_history` 工具；普通聊天不创建任务。
 - 需求和附件本地保存、任务查看与待派发任务取消、重启恢复。
 - 附件通过系统文件选择器导入副本，支持 TXT、Markdown、PDF、图片、DOCX 和 CSV；每个最多 25 MB，每次需求最多 8 个。当前只接收和打开文件，不解析内容。
@@ -53,7 +53,7 @@ npm start
 
 依赖直接安装官方 `@earendil-works/pi-coding-agent` 与 `@earendil-works/pi-ai`，均锁定 1.3.0，不需要另外安装 Pi CLI。Pi 运行在 Electron 管理的独立进程中，界面只接收 Orbit 定义的消息和状态。
 
-模型配置层支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 服务和本地 Codex ChatGPT 登录。可保存多套配置，显式激活其中一套；切换保留当前 Pi 会话及任务。PR1 提供 `window.orbit.models` 接口，模型设置页面将在 PR2 实现，接口示例见 [模型配置文档](docs/MODEL_PROVIDERS.md)。
+模型配置层支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 服务和本地 Codex ChatGPT 登录。可保存多套配置，显式激活其中一套；切换保留当前 Pi 会话及任务。从主入口的“配置模型 / 模型设置”或“设置 → 模型配置”进入，添加 API 密钥或本地订阅配置，选择模型后“保存并启用”。也可“仅保存”，再分别测试连接和启用；测试结果不改变当前选择。详细流程见 [模型配置文档](docs/MODEL_PROVIDERS.md)。
 
 API key 由主进程使用 Electron `safeStorage` 加密，随配置写入 `<userData>/models.json`，界面读取时只有 `hasApiKey`。本地 Codex 来源每次调用只读 `CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）中的有效 access token；不复制 refresh token，不代替 Codex 登录、刷新或回写文件。首版不支持系统凭据库中的 Codex 登录，也未接入 Claude Code。
 
@@ -80,9 +80,9 @@ npm run check
 npm run test:desktop
 ```
 
-桌面测试需要图形会话，使用临时数据目录和本机 HTTP 模型桩，运行真实 Pi SDK 与独立进程，覆盖聊天、业务工具、任务取消、会话恢复、停止回复、语音设置，以及模型配置 IPC、系统密钥加密、模型切换、重启和 Codex 只读凭据。Room UI 测试另外覆盖历史翻页位置、回执去重、流式更新保留旧页、麦克风暂停 / 恢复及旧音频回调隔离。不调用真实云端模型，不读取用户实际 Codex 凭据。截图输出到已忽略的 `artifacts/`。
+桌面测试需要图形会话，使用临时数据目录和本机 HTTP 模型桩，运行真实 Pi SDK 与独立进程，覆盖聊天、业务工具、任务取消、会话恢复、停止回复、语音设置，以及模型配置 IPC、系统密钥加密、模型切换、重启和 Codex 只读凭据。Room UI 测试另外覆盖历史翻页位置、回执去重、流式更新保留旧页、麦克风暂停 / 恢复及旧音频回调隔离。不调用真实云端模型，不读取用户实际 Codex 凭据。模型 UI 测试通过真实控件覆盖配置增删改、留空保留密钥、启用失败保留配置、回复中及跨页面操作互斥、目录与登录异常、只读环境来源和配置损坏保护。截图输出到已忽略的 `artifacts/`。
 
-显式运行 `node scripts/codex-live-smoke.mjs` 可用本机 Codex 登录做真实端到端验证（需先构建）。它使用隔离的 Orbit 数据目录，验证连接、流式回复、重启续聊和任务查询工具，会消耗少量订阅额度。默认 `gpt-6.1-sol`，可通过 `ORBIT_CODEX_SMOKE_MODEL` 指定账号可用模型；不会修改 Codex 登录文件。详见 [模型配置文档](docs/MODEL_PROVIDERS.md#验证)。
+显式运行 `node scripts/codex-live-smoke.mjs` 可用本机 Codex 登录做真实端到端验证（需先构建）。它使用隔离的 Orbit 数据目录，通过模型配置 UI 完成添加、测试连接和启用，再验证流式回复、重启续聊和任务查询工具，会消耗少量订阅额度。默认 `gpt-6.1-sol`，可通过 `ORBIT_CODEX_SMOKE_MODEL` 指定账号可用模型；不会修改 Codex 登录文件。详见 [模型配置文档](docs/MODEL_PROVIDERS.md#验证)。
 
 首版使用 TypeScript 快速开发。采用职责清晰的模块化设计，按实际用例接入所需能力，再逐步优化和迭代。
 

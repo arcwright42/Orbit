@@ -57,8 +57,13 @@ Orbit/
 | 文件 | 入口 / 对象 | 具体负责什么 |
 | --- | --- | --- |
 | [main.tsx](../src/renderer/main.tsx) | React 根节点 | 加载全局样式，将 `App` 挂载到 HTML 的 `root`，启用 `StrictMode`。 |
-| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
+| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。通过 `useModelSettings` 保持模型操作状态，挂载独立模型设置组件。当前页面组装主要集中在本文件。 |
 | [TaskBoard.tsx](../src/renderer/TaskBoard.tsx) | `TaskBoard` | 任务看板 / 列表切换、搜索、状态筛选、任务卡片及选中回调。数据由 `App` 传入，不直接查询数据库。 |
+| [ModelSettings.tsx](../src/renderer/ModelSettings.tsx) | `ModelSettings` | 当前文字模型、配置列表与搜索、来源和登录状态、连接测试结果、启用 / 删除 / 编辑及焦点恢复。入口在设置页和主入口输入框下方。 |
+| [ModelProfileForm.tsx](../src/renderer/ModelProfileForm.tsx) | `ModelProfileForm` | API / 本地订阅表单、服务选择、写入密钥、自定义地址与容量、仅保存 / 保存并启用；相同服务地址下留空保留密钥，更换来源或地址要求新密钥。 |
+| [ModelPicker.tsx](../src/renderer/ModelPicker.tsx) | `ModelPicker` | 按 provider 加载并搜索目录，保留当前选择及失效条目，隔离迟到请求，提供加载失败重试；账号权限由显式连接测试验证。 |
+| [useModelSettings.ts](../src/renderer/useModelSettings.ts) | `useModelSettings` | App 级配置状态、IPC 事件订阅、过期读取隔离、操作互斥、独立登录检测和测试结果。区分保存失败与保存成功后启用失败，导航时保持未完成操作。 |
+| [model-settings.css](../src/renderer/model-settings.css) | 模型页面 CSS | 当前模型、配置卡片、表单、目录选择、状态和响应式样式，限定在模型组件内。 |
 | [useRoom.ts](../src/renderer/useRoom.ts) | `useRoom` | 订阅 Room 最近页，按消息 ID 合并并按 seq 排序，保留已加载旧页，防止初始 read 覆盖实时事件，管理旧页 cursor 与读取互斥。 |
 | [useVoice.ts](../src/renderer/useVoice.ts) | `useVoice` | 获取麦克风、启动 AudioWorklet、经 IPC 发送音频帧；播放服务端 24 kHz PCM 音频，管理播放队列、打断和资源释放；文字回复时关闭麦克风 track 与帧上传，语音就绪后恢复，手动切回语音复用麦克风；generation 隔离迟到的采集 / IPC 错误。转写由 Room 时间线展示。 |
 | [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、对话、输入框、任务看板、文件、设置、语音面板、弹窗及响应式样式。 |
@@ -194,7 +199,7 @@ flowchart LR
 
 `window.orbit.models → models:* IPC → ModelConfigurationService`，由应用服务调用配置仓储和模型运行时端口。激活时 `PiAgentHost → worker → PiSession.configure` 重建模型适配，保留同一个 Pi 会话；连接测试直接调用 `testModelConnection`，不创建会话或业务工具。
 
-worker 需要凭据时走 `credential → host → ModelConfigurationService.credential`，由主进程解密 API key 或只读 Codex 登录，再通过内部响应返回。renderer 只收到配置视图和安全错误。支持范围、选择优先级和 PR2 接口见 [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md)。
+worker 需要凭据时走 `credential → host → ModelConfigurationService.credential`，由主进程解密 API key 或只读 Codex 登录，再通过内部响应返回。renderer 只收到配置视图和安全错误。支持范围、选择优先级和 UI 接口见 [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md)。
 
 ## 4. 状态与数据放在哪里
 
@@ -253,7 +258,8 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
 | [scripts/room-ui-smoke.mjs](../scripts/room-ui-smoke.mjs) | `npm run test:desktop` 的第三阶段 | 真实 Electron / preload / Room / Pi，离线控制语音状态与模拟麦克风：统一历史、翻页位置、回执去重、旧页保留、暂停和手动切回、旧音频错误隔离、资源释放。 |
 | [scripts/model-smoke.mjs](../scripts/model-smoke.mjs) | `npm run test:desktop` 的第二阶段 | 通过真实 preload / IPC 验证模型配置增删改查、系统加密、连接测试、切换和重启、回复中互斥；临时 Codex 文件用于检测、过期拒绝与只读验证。不调用真实云端模型。 |
-| [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron UI / IPC 测试连接、流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
+| [scripts/model-ui-smoke.mjs](../scripts/model-ui-smoke.mjs) | `npm run test:desktop` 的第四阶段 | 真实 Electron 控件到 IPC 的配置 CRUD、密钥保留、目录切换、测试与启用分离、部分失败、回复 / 页面切换互斥、重启、登录过期、环境只读与损坏保护；只用临时数据和本机模型桩。 |
+| [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron 模型设置 UI 添加配置、测试连接、启用，再验证流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
 | [scripts/room-live-smoke.mjs](../scripts/room-live-smoke.mjs) | `node scripts/room-live-smoke.mjs` | 显式联网：真实 Codex / Qwen 双向上下文、历史工具、语音暂停恢复、重启、凭据隔离；临时数据和 macOS 合成音频，不采集真实麦克风。 |
 | [scripts/voice-smoke.mjs](../scripts/voice-smoke.mjs) | `node scripts/voice-smoke.mjs` | 显式联网验证：使用模拟麦克风和本机语音配置，检查真实 Qwen 会话、停止与本地唤醒初始化；保存语音界面截图。需要先构建、安装唤醒模型并准备 `artifacts/`。 |
 | [scripts/voice-roundtrip.mjs](../scripts/voice-roundtrip.mjs) | `node scripts/voice-roundtrip.mjs <wake.wav> <query.wav>` | 显式联网验证：输入两份单声道 16 kHz WAV，按实时速率注入唤醒词和提问，等待语音回复，输出转写 / 状态事件及音频块数量。需要已构建桌面、唤醒模型和 Qwen 配置。 |

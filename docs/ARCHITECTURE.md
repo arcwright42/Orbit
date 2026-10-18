@@ -57,7 +57,7 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 
 通过 `ResourceLoader` 明确提供资源，不读取外部扩展、技能、MCP 或项目规则。当前工具白名单是 `list_tasks`、`save_request`、`read_history`、`search_history`，两个通道共用定义和执行服务。资源配置、凭据与会话目录独立于用户的 `~/.pi`。主进程管理模型配置和凭据，worker 通过内部 RPC 按需获取 API key 或有效 Codex access token；不把借用的登录放入 Pi OAuth 存储。
 
-PR1 支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 和本地 Codex ChatGPT 登录。回复中禁止配置变更，空闲切换复用 Pi `SessionManager` 保留历史。连接测试使用无工具的单次调用，不创建会话或任务。`window.orbit.models` 为 PR2 提供配置、模型目录、检测、测试和激活接口；当前未修改模型设置 UI。详细约束与示例见 [模型配置文档](MODEL_PROVIDERS.md)。
+PR1 支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 和本地 Codex ChatGPT 登录。回复中禁止配置变更，空闲切换复用 Pi `SessionManager` 保留历史。连接测试使用无工具的单次调用，不创建会话或任务。模型设置 UI 通过 `window.orbit.models` 完成配置、模型目录、检测、测试和激活。`useModelSettings` 在 App 生命周期内持有操作锁与状态订阅，离开设置页仍保留正在执行的操作；表单仅暂存新输入的密钥，关闭或保存后清空。详细约束与示例见 [模型配置文档](MODEL_PROVIDERS.md)。
 
 会话启用 Pi 自带压缩和有限重试，上下文上限为 262144 token 并按模型实际容量收缩，关闭空闲缓存预热。界面使用最终消息覆盖流式草稿；不把低层 `agent_end` 当成整个回复或业务任务已经完成。模型调用和上下文管理归 Pi，业务工具与任务状态机归 Orbit。
 
