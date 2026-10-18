@@ -1,8 +1,9 @@
 import { useVoice } from './useVoice';
+import { useRoom } from './useRoom';
 import { TaskBoard } from './TaskBoard';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, ArrowUpRight, AudioLines, ChevronRight, Circle, PanelLeft, FileText, FolderOpen, Layers3, LoaderCircle, MessageSquare, Orbit, Plus, Settings2, Square, X } from 'lucide-react';
-import type { Attachment, Conversation, Workspace } from '../contracts';
+import type { Attachment, Workspace } from '../contracts';
 
 type Page = 'home' | 'tasks' | 'files' | 'settings';
 const labels: Record<Page, string> = { home: '主入口', tasks: '任务', files: '文件', settings: '设置' };
@@ -12,13 +13,16 @@ const messageError = (error: unknown) => error instanceof Error ? error.message.
 
 export function App() {
   const [data, setData] = useState<Workspace>();
-  const [conversation, setConversation] = useState<Conversation>();
-  const voice = useVoice(() => { void window.orbit.workspace().then(setData); });
+  const voice = useVoice();
   const [page, setPage] = useState<Page>('home');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState('');
+  const { conversation, loadingOlder, loadOlder } = useRoom(
+    () => { void window.orbit.workspace().then(setData).catch(e => setError(messageError(e))); },
+    e => setError(messageError(e)),
+  );
   const [sending, setSending] = useState(false);
   const busy = sending || conversation?.status === 'running';
   const [picking, setPicking] = useState(false);
@@ -27,26 +31,34 @@ export function App() {
   const lock = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    window.orbit.workspace().then(setData).catch(e => setError(messageError(e)));
-    let receivedState = false;
-    const unsubscribe = window.orbit.onConversation(state => {
-      receivedState = true;
-      setConversation(state);
-      if (state.status === 'idle') void window.orbit.workspace().then(setData).catch(e => setError(messageError(e)));
-    });
-    // A live event may arrive before the initial IPC read resolves.
-    window.orbit.conversation().then(state => { if (!receivedState) setConversation(state); }).catch(e => setError(messageError(e)));
-    return unsubscribe;
-  }, []);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [data?.messages.length, conversation?.messages.length, conversation?.draft, page]);
-  const messages = [...(data?.messages ?? []), ...(conversation?.messages ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const followBottom = useRef(true);
+  const scrollAnchor = useRef<{ id: string; top: number } | null>(null);
+  const messages = conversation?.messages ?? [];
+  useEffect(() => { void window.orbit.workspace().then(setData).catch(e => setError(messageError(e))); }, []);
+  useLayoutEffect(() => {
+    const container = messagesRef.current;
+    if (!container) return;
+    const anchor = scrollAnchor.current;
+    if (anchor) {
+      if (messages[0]?.id === anchor.id) return;
+      const element = [...container.querySelectorAll<HTMLElement>('[data-message-id]')].find(item => item.dataset.messageId === anchor.id);
+      if (element) container.scrollTop += element.getBoundingClientRect().top - anchor.top;
+      scrollAnchor.current = null;
+    } else if (followBottom.current) bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+  }, [conversation?.messages, conversation?.draft, page, voice.state]);
+  function older() {
+    const first = messagesRef.current?.querySelector<HTMLElement>('[data-message-id]');
+    if (first?.dataset.messageId) scrollAnchor.current = { id: first.dataset.messageId, top: first.getBoundingClientRect().top };
+    followBottom.current = false;
+    void loadOlder().then(loaded => { if (!loaded) scrollAnchor.current = null; });
+  }
   const active = data?.tasks.filter(task => task.status === 'pending') ?? [];
   const detail = data?.tasks.find(task => task.id === selected);
 
   async function submit(saveOnly = false) {
     if (lock.current || busy || (!draft.trim() && !attachments.length)) return;
-    lock.current = true; setSending(true); setError('');
+    lock.current = true; setSending(true); setError(''); followBottom.current = true;
     try {
       const input = { requestId: requestId.current, text: draft, attachmentIds: attachments.map(item => item.id) };
       if (saveOnly) setData(await window.orbit.submit(input));
@@ -86,8 +98,10 @@ export function App() {
       {error && <div className="error-banner" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError('')}><X size={16} /></button></div>}
       {!data ? <div className="empty-state"><LoaderCircle className="spin" /><h2>正在打开你的工作空间</h2>{error && <button onClick={() => location.reload()}>重新加载</button>}</div> : <>
         {page === 'home' && <section className={`home ${messages.length || busy ? 'has-messages' : ''}`}>
-          {messages.length === 0 && !busy ? null : <div className="messages">{messages.map(message => <article key={message.id} className={`message ${message.role}`}><div className="message-heading">{message.role === 'user' ? <span className="mini-avatar">你</span> : <Orbit size={19} />}<strong>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'Orbit' : 'Orbit · 系统回执'}</strong><time>{timeLabel(message.createdAt)}</time></div><p>{message.text}</p>{message.role === 'user' && (message.attachmentIds ?? data.tasks.find(task => task.id === message.taskId)?.attachmentIds ?? []).map(id => { const file = data.attachments.find(item => item.id === id); return file && <button className="file-chip" key={id} onClick={() => openFile(id)}><FileText size={14} />{file.name}</button>; })}{message.role === 'system' && message.taskId && <button className="inline-task" onClick={() => setSelected(message.taskId)}><Layers3 size={17} /><span>{data.tasks.find(task => task.id === message.taskId)?.title}</span><span className="badge">{data.tasks.find(task => task.id === message.taskId)?.status === 'canceled' ? '已取消' : '待派发'}</span><ChevronRight size={15} /></button>}</article>)}{conversation?.status === 'running' && <article className="message assistant" aria-live="polite"><div className="message-heading"><Orbit size={19} /><strong>Orbit</strong><LoaderCircle size={14} className="spin" /></div><p>{conversation.draft || '正在思考…'}</p></article>}<div ref={bottomRef} /></div>}
-          <div className="composer-area"><div className="composer">{attachments.length > 0 && <div className="attachment-row">{attachments.map(file => <span className="file-chip" key={file.id}><FileText size={14} />{file.name}<button disabled={busy} aria-label={`移除 ${file.name}`} onClick={() => { setAttachments(current => current.filter(item => item.id !== file.id)); requestId.current = crypto.randomUUID(); }}><X size={13} /></button></span>)}</div>}<textarea ref={inputRef} aria-label="你的需求" placeholder="想做些什么？" value={draft} maxLength={16000} disabled={busy} onChange={event => { setDraft(event.target.value); requestId.current = crypto.randomUUID(); }} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} /><div className="composer-tools"><div><button className="attach-button" aria-label="添加附件" title="图片或文档 · 每个最多 25 MB" disabled={picking || busy || attachments.length >= 8} onClick={pick}>{picking ? <LoaderCircle size={19} className="spin" /> : <Plus size={18} />}<span>添加文件</span></button><button className="icon-button" aria-label={voice.state === 'off' ? '开始语音' : '结束语音'} title="语音对话" onClick={() => { if (voice.state === 'off') void voice.start(false); else void voice.stop(); }}><AudioLines size={19} /></button></div>{conversation?.status === 'running' ? <button className="send" aria-label="停止回复" onClick={() => { void window.orbit.stopReply().catch(e => setError(messageError(e))); }}><Square size={14} fill="currentColor" /></button> : <button className="send" aria-label="发送消息" disabled={busy || picking || !conversation?.configured || (!draft.trim() && !attachments.length)} onClick={() => void submit()}>{busy ? <LoaderCircle size={19} className="spin" /> : <ArrowUp size={20} />}</button>}</div></div><div className="composer-footer"><button onClick={() => selectPage('settings')}>{conversation?.configured ? '对话设置' : '模型尚未配置'}</button><button disabled={busy || picking || (!draft.trim() && !attachments.length)} onClick={() => void submit(true)}>仅保存需求</button><span>⌘ ↵</span></div>{conversation?.error && <p className="conversation-notice" role="status">{conversation.error}</p>}</div>
+          {messages.length === 0 && !busy ? null : <div className="messages" ref={messagesRef} onScroll={event => { const element = event.currentTarget; followBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; }}>
+            {conversation?.nextCursor && <button className="history-more" disabled={loadingOlder} onClick={older}>{loadingOlder ? '正在加载…' : '加载更早的对话'}</button>}
+            {messages.map(message => <article key={message.id} data-message-id={message.id} className={`message ${message.role}`}><div className="message-heading">{message.role === 'user' ? <span className="mini-avatar">你</span> : <Orbit size={19} />}<strong>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'Orbit' : 'Orbit · 系统回执'}</strong><time>{timeLabel(message.createdAt)}</time>{message.channel === 'voice' && <span className="message-channel"><AudioLines size={12} />语音</span>}{message.status === 'interrupted' && <span className="message-status">已中断</span>}{message.status === 'failed' && <span className="message-status">未完成</span>}</div><p>{message.text}</p>{message.role === 'user' && (message.attachmentIds ?? data.tasks.find(task => task.id === message.taskId)?.attachmentIds ?? []).map(id => { const file = data.attachments.find(item => item.id === id); return file && <button className="file-chip" key={id} onClick={() => openFile(id)}><FileText size={14} />{file.name}</button>; })}{message.role === 'system' && message.taskId && <button className="inline-task" onClick={() => setSelected(message.taskId)}><Layers3 size={17} /><span>{data.tasks.find(task => task.id === message.taskId)?.title}</span><span className="badge">{data.tasks.find(task => task.id === message.taskId)?.status === 'canceled' ? '已取消' : '待派发'}</span><ChevronRight size={15} /></button>}</article>)}{conversation?.status === 'running' && <article className="message assistant" aria-live="polite"><div className="message-heading"><Orbit size={19} /><strong>Orbit</strong><LoaderCircle size={14} className="spin" /></div><p>{conversation.draft || '正在思考…'}</p></article>}<div ref={bottomRef} /></div>}
+          <div className="composer-area"><div className="composer">{attachments.length > 0 && <div className="attachment-row">{attachments.map(file => <span className="file-chip" key={file.id}><FileText size={14} />{file.name}<button disabled={busy} aria-label={`移除 ${file.name}`} onClick={() => { setAttachments(current => current.filter(item => item.id !== file.id)); requestId.current = crypto.randomUUID(); }}><X size={13} /></button></span>)}</div>}<textarea ref={inputRef} aria-label="你的需求" placeholder="想做些什么？" value={draft} maxLength={16000} disabled={busy} onChange={event => { setDraft(event.target.value); requestId.current = crypto.randomUUID(); }} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} /><div className="composer-tools"><div><button className="attach-button" aria-label="添加附件" title="图片或文档 · 每个最多 25 MB" disabled={picking || busy || attachments.length >= 8} onClick={pick}>{picking ? <LoaderCircle size={19} className="spin" /> : <Plus size={18} />}<span>添加文件</span></button><button className="icon-button" aria-label={voice.state === 'paused' ? '切回语音' : voice.state === 'off' ? (busy ? '切换到语音' : '开始语音') : '结束语音'} title="语音对话" onClick={() => { if (voice.state === 'paused') void voice.resume(); else if (voice.state === 'off') void voice.start(false); else void voice.stop(); }}><AudioLines size={19} /></button></div>{conversation?.status === 'running' ? <button className="send" aria-label="停止回复" onClick={() => { void window.orbit.stopReply().catch(e => setError(messageError(e))); }}><Square size={14} fill="currentColor" /></button> : <button className="send" aria-label="发送消息" disabled={busy || picking || !conversation?.configured || (!draft.trim() && !attachments.length)} onClick={() => void submit()}>{busy ? <LoaderCircle size={19} className="spin" /> : <ArrowUp size={20} />}</button>}</div></div><div className="composer-footer"><button onClick={() => selectPage('settings')}>{conversation?.configured ? '对话设置' : '模型尚未配置'}</button><button disabled={busy || picking || (!draft.trim() && !attachments.length)} onClick={() => void submit(true)}>仅保存需求</button><span>⌘ ↵</span></div>{conversation?.error && <p className="conversation-notice" role="status">{conversation.error}</p>}</div>
         </section>}
         {page === 'tasks' && <TaskBoard tasks={data.tasks} onSelect={setSelected} onNew={() => { selectPage('home'); setTimeout(() => inputRef.current?.focus(), 0); }} />}
         {page === 'files' && <section className="page-content"><div className="page-heading"><h1>你的文件</h1><p>已保存的附件</p></div>{data.attachments.length === 0 ? <Empty icon={FolderOpen} title="暂无文件" description="在主入口添加图片或文档，资料会保存在这里。" action={() => selectPage('home')} /> : <div className="task-list">{data.attachments.map(file => <button className="task-row" key={file.id} onClick={() => openFile(file.id)}><span className="task-icon"><FileText size={20} /></span><div><strong>{file.name}</strong><p>{sizeLabel(file.size)} · {timeLabel(file.createdAt)}</p></div><span className="badge neutral">已接收</span><ArrowUpRight size={17} /></button>)}</div>}</section>}
@@ -95,7 +109,7 @@ export function App() {
           <div className="page-heading"><h1>设置</h1></div>
           <div className="settings-card">
             <div className="settings-title"><span className="task-icon"><MessageSquare size={21} /></span><div><h3>文字对话</h3><p>{conversation?.model ?? '尚未配置模型服务'}</p></div><span className="badge neutral">{conversation?.configured ? '已配置' : '待配置'}</span></div>
-            <p className="field-help">对话记录保存在本机，重启后可以继续。Orbit 会查询任务、澄清目标，并将明确的工作需求保存为待派发任务。执行团队尚未接入。</p>
+            <p className="field-help">文字与语音共用一段对话，记录保存在本机，重启后可以继续。Orbit 会查询任务、澄清目标，并将明确的工作需求保存为待派发任务。执行团队尚未接入。</p>
             {!conversation?.configured && <p className="field-help">开发版本请按项目 README 配置文字模型服务并重启应用；也可先在主入口选择“仅保存需求”。</p>}
           </div>
           <div className="settings-card">
@@ -105,10 +119,10 @@ export function App() {
           </div>
         </section>}
       </>}
-      {(voice.state !== 'off' || voice.error || voice.lines.length > 0) && <aside className="voice-panel" aria-label="语音对话">
-        <div className="voice-heading"><AudioLines size={18} /><strong>{{ off: '语音已结束', waiting: '等待唤醒 · Hey Orbit', connecting: '正在连接…', listening: '正在聆听' }[voice.state]}</strong>{voice.state !== 'off' && <button className="secondary-button" onClick={() => void voice.stop()}>结束语音</button>}</div>
+      {(voice.state !== 'off' || voice.error) && <aside className="voice-panel" aria-label="语音对话">
+        <div className="voice-heading"><AudioLines size={18} /><strong>{{ off: '语音已结束', waiting: '等待唤醒 · Hey Orbit', connecting: '正在连接…', listening: '正在聆听', paused: '文字回复中 · 麦克风已暂停' }[voice.state]}</strong>{voice.state !== 'off' && <button className="secondary-button" onClick={() => void voice.stop()}>结束语音</button>}</div>
         {voice.error && <p role="alert">{voice.error}</p>}
-        <div className="voice-transcripts" aria-live="polite">{voice.lines.map((line, i) => <p key={i}><strong>{line.role === 'user' ? '你' : 'Orbit'}</strong> {line.text}</p>)}</div>
+        {voice.state === 'paused' ? <div className="voice-actions"><span>回复结束后自动恢复语音。</span><button className="secondary-button" onClick={() => void voice.resume()}>停止文字，切回语音</button></div> : voice.state === 'listening' && <p className="voice-help">可以直接说，也可以输入文字。对话记录在主入口继续。</p>}
       </aside>}
     </main>
     {detail && <div className="modal-backdrop" onClick={() => setSelected(undefined)}><section className="task-detail" role="dialog" aria-modal="true" aria-labelledby="task-title" onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Escape') setSelected(undefined); }}><div className="detail-top"><span className="eyebrow">任务详情</span><button className="icon-button" aria-label="关闭任务详情" autoFocus onClick={() => setSelected(undefined)}><X size={20} /></button></div><h2 id="task-title">{detail.title}</h2><span className="badge">{detail.status === 'pending' ? '待派发' : '已取消'}</span><h4>你的要求</h4><p className="brief">{detail.brief || '仅提供了附件，执行前需要明确目标。'}</p><h4>相关资料</h4>{detail.attachmentIds.length ? detail.attachmentIds.map(id => { const file = data?.attachments.find(item => item.id === id); return file && <button className="file-chip" key={id} onClick={() => openFile(id)}><FileText size={14} />{file.name}</button>; }) : <p className="muted">暂无附件</p>}<div className="detail-info"><span>创建于</span><span>{timeLabel(detail.createdAt)}</span></div>{detail.status === 'pending' && <button className="secondary-button" onClick={async () => { try { setData(await window.orbit.cancelTask(detail.id)); } catch (e) { setError(messageError(e)); } }}>取消这项待派发任务</button>}</section></div>}

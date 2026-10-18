@@ -65,7 +65,7 @@ Electron 渲染进程使用 context isolation 和 sandbox，禁用 Node integrat
 
 ## 语音通道
 
-Qwen 继续走官方实时协议，由 Room 与 Pi 串行编排。文字输入暂停语音，回复完成后按用户语音开关恢复 Qwen 并注入最近上下文；手动切回语音先中断 Pi。历史工具可跨 session 读取同一 room 的记录。Room PR1 提供后端和 IPC，PR2 实现统一时间线及麦克风控制。主动 session 轮换时机留到后续商讨；详见 [Room 与共享历史](ROOM_HISTORY.md)。语音配置与文字模型配置分开，详见 README 和 `.env.example`。
+Qwen 继续走官方实时协议，由 Room 与 Pi 串行编排。文字输入暂停语音，回复完成后按用户语音开关恢复 Qwen 并注入最近上下文；手动切回语音先中断 Pi。历史工具可跨 session 读取同一 room 的记录。Room PR1 提供后端和 IPC，PR2 接入统一时间线、旧页合并、阅读位置保持及麦克风暂停 / 恢复。主动 session 轮换时机留到后续商讨；详见 [Room 与共享历史](ROOM_HISTORY.md)。语音配置与文字模型配置分开，详见 README 和 `.env.example`。
 
 ## 下一步业务层
 
@@ -80,6 +80,6 @@ Qwen 继续走官方实时协议，由 Room 与 Pi 串行编排。文字输入�
 
 `npm run check`：类型检查、离线测试、网页与 Electron 构建。测试使用真实 Pi SDK 和本机 HTTP 模型桩，覆盖流式输出、工具白名单、业务去重、附件范围、上下文恢复、中断、服务错误、子进程崩溃，以及模型配置加密、优先级、回滚、五种 provider 协议和 Codex 只读轮换。
 
-`npm run test:desktop`：在临时目录中启动真实 Electron 和 Pi worker，通过本机模型桩验证聊天、业务工具、任务取消、重启会话恢复、停止回复、语音设置和模型配置 IPC / 系统加密 / 切换。截图输出到已忽略的 `artifacts/`。这些测试不产生真实模型用量，也不证明某个云端模型的实际推理质量或账号访问权限。
+`npm run test:desktop`：在临时目录中启动真实 Electron 和 Pi worker，通过本机模型桩验证聊天、业务工具、任务取消、重启会话恢复、停止回复、语音设置和模型配置 IPC / 系统加密 / 切换。Room UI 测试覆盖统一历史翻页、旧页保留、回执去重、麦克风暂停和迟到音频回调隔离。截图输出到已忽略的 `artifacts/`。这些测试不产生真实模型用量，也不证明某个云端模型的实际推理质量或账号访问权限。
 
 `node scripts/voice-smoke.mjs` 是单独运行的 Qwen 联网验证，使用本地 `.env` 和模拟麦克风，会产生少量 API 用量。
