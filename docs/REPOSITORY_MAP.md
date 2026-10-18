@@ -2,7 +2,7 @@
 
 更新日期：2026-10-18。
 
-本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置后端与 Room 后端 / 统一入口 UI；历史业务链路 HTML 的基线另见文档索引。
+本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置、Room / 统一入口 UI 及任务执行后端；历史业务链路 HTML 的基线另见文档索引。
 
 仓库目前只有一个 npm 包：根目录 [package.json](../package.json) 定义的 `orbit-desktop`。`src/` 下的目录是这个包内部的逻辑模块，尚未拆成独立发布的 workspace packages。
 
@@ -19,7 +19,7 @@ Orbit/
 │   ├── application/          Orbit 交互规则与业务用例编排
 │   ├── domains/
 │   │   ├── conversation/     Agent 运行接口、业务工具契约、需求回执
-│   │   ├── tasks/            需求校验、任务存取与取消规则
+│   │   ├── tasks/            需求、Task / Step / Run、固定 DAG 与执行存取
 │   │   ├── materials/        附件导入、副本与元信息
 │   │   ├── models/           模型配置契约、provider 注册与验证
 │   │   └── voice/            Qwen 实时语音、本地唤醒检测
@@ -27,6 +27,8 @@ Orbit/
 │       ├── database.ts       SQLite 建表、版本检查、事务
 │       ├── history/          按 session 归档、迁移、文件检索与分页读取
 │       ├── models/           配置文件、系统密钥保护、Codex 只读凭据
+│       ├── execution/        Pi / Codex / Claude 任务运行时、进程与工具协议
+│       ├── tasks/            任务目录、输入与成果文件核验
 │       └── pi/               Pi SDK 适配、会话与子进程通信
 ├── public/                   浏览器侧静态资源，目前为音频采集 worklet
 ├── assets/voice/             本地唤醒词、模型资源与许可说明
@@ -36,7 +38,7 @@ Orbit/
 └── .github/workflows/        持续集成
 ```
 
-运行时主要分为三个进程：React 渲染进程、Electron 主进程、Pi Agent 子进程。SQLite 和附件操作由主进程持有，Pi SDK 由 Agent 子进程加载，界面通过 `window.orbit` 调用应用能力。
+运行时包括 React 渲染进程、Electron 主进程、常驻 Pi 子进程，以及每个 Run 独立的任务 worker / 原生 CLI 子进程。SQLite 和附件操作由主进程持有，Pi SDK 由 Agent 子进程加载，界面通过 `window.orbit` 调用应用能力。
 
 当前模块也包含实际存储和协议实现：`TaskRepository` 直接使用 SQLite，`MaterialLibrary` 操作文件和数据库，`domains/voice` 接入 WebSocket 与原生唤醒库。读代码时应按这些实际依赖定位。
 
@@ -48,7 +50,7 @@ Orbit/
 | --- | --- | --- |
 | [contracts.ts](../src/contracts.ts) | `Attachment`、`Message`、`Task`、`SubmitRequest`、`Workspace`、`Conversation`、`OrbitApi`、`VoiceEvent` | 定义界面、预加载、主进程共同使用的可序列化数据。`Workspace` 是业务数据视图，`Conversation` 用于旧 Pi 投影及新的 Room 分页视图；`OrbitApi` 是 `window.orbit` 的接口。新增跨进程字段或界面能力先核对这里。 |
 
-`Task.status` 已定义任务执行生命周期；当前桌面入口仍只保存待派发任务，后续运行时 PR 接通执行。`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
+`Task.status` 已定义任务执行生命周期；桌面入口与常驻 Agent 已接通执行，任务 UI 在后续 PR 补齐。`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
 
 ### 2.2 页面模块：`src/renderer/`
 
@@ -64,14 +66,14 @@ Orbit/
 | [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、对话、输入框、任务看板、文件、设置、语音面板、弹窗及响应式样式。 |
 | [global.d.ts](../src/renderer/global.d.ts) | `Window.orbit` | 把 `OrbitApi` 声明到浏览器全局类型，只提供 TypeScript 类型，不创建运行时接口。 |
 
-`TaskBoard` 展示了“进行中 / 待验收 / 已完成”等预留列；后端目前只能产生待派发和已取消任务。增加列本身不会增加执行能力。
+`TaskBoard` 的执行状态呈现将在任务 UI PR 中对齐后端；业务状态以 TaskExecutionService 和 SQLite 为准。
 
 ### 2.3 桌面与进程入口：`src/desktop/`
 
 | 文件 | 运行位置 | 具体负责什么 |
 | --- | --- | --- |
 | [main.ts](../src/desktop/main.ts) | Electron 主进程 | 应用装配入口：读取 `.env`、确定数据目录、打开数据库、创建资料 / 工作空间 / 交互 / 模型配置服务和 `PiAgentHost`；注入 `safeStorage`、配置仓储与 Codex 凭据，校验 IPC 来源；启动窗口与菜单，处理文件选择、麦克风权限、语音与唤醒；通过 `utilityProcess.fork` 启动 Pi worker，退出时关闭 Agent 和数据库。 |
-| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，包含 `models` 配置 API 和 `room.read / room.onChanged`；方法映射为 IPC 请求，对话 / 模型配置 / 语音事件映射为订阅，并提供取消订阅函数。不返回密钥。 |
+| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，包含 `models`、`room` 和 `execution` API；方法映射为 IPC 请求，对话 / 模型配置 / 语音事件映射为订阅，并提供取消订阅函数。不返回密钥。 |
 | [agent-worker.ts](../src/desktop/agent-worker.ts) | 独立 Agent 子进程 | 接收会话、配置切换、模型目录和连接测试命令，调用 `PiSession` 或模型运行时，回传状态和响应。业务工具和凭据读取经内部 RPC 转给主进程；支持 Electron `parentPort`，也支持测试使用的 Node IPC。 |
 
 ### 2.4 业务用例：`src/application/`
@@ -80,7 +82,7 @@ Orbit/
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
-| [interaction.ts](../src/application/interaction.ts) | `INTERACTION_PROMPT`、`INTERACTION_TOOLS`、`InteractionService` | 定义常驻交互 Agent 的身份、职责和 `list_tasks / save_request / read_history / search_history` 工具参数。`prepare` 校验输入并解析附件元信息；`execute` 分派业务工具，限制可关联的附件，用 room ID 和轮次 ID 生成稳定去重键，再调用 `WorkspaceService`。这里不导入 Pi SDK。 |
+| [interaction.ts](../src/application/interaction.ts) | `INTERACTION_PROMPT`、`INTERACTION_TOOLS`、`InteractionService` | 定义常驻交互 Agent 的身份、职责和 任务派发 / 管理、保存需求和历史工具参数。`prepare` 校验输入并解析附件元信息；`execute` 分派业务工具，限制可关联的附件，用 room ID 和轮次 ID 生成稳定去重键，再调用 `WorkspaceService`。这里不导入 Pi SDK。 |
 | [room.ts](../src/application/room.ts) | `RoomService` | 串行化文字 / 语音输入，维护 generation，归档可见消息和回执，向 Pi / Qwen 注入最近历史，验证工具归属，控制切换、暂停、恢复与退出；不加载 Pi SDK。 |
 | [workspace.ts](../src/application/workspace.ts) | `WorkspaceService` | `snapshot` 汇总任务、附件和业务消息；`submit` 支持手动保存；`saveRequest` 在事务中校验附件、去重、创建待派发任务并写系统回执；`cancelTask` 调用任务取消规则。Agent 保存只写业务回执，直接保存还写用户输入消息。 |
 | [models.ts](../src/application/models.ts) | `ModelConfigurationService` | 读取 / 保存 / 删除多套模型配置，激活和测试；控制环境兼容优先级、回复中的变更限制、运行时切换及保存失败回滚。对外生成无凭据视图，对 worker 按需解析凭据。通过内部端口使用存储和运行时，不导入 Electron / Pi。 |
@@ -153,6 +155,22 @@ Pi 的调用循环、模型协议、上下文管理和会话能力来自安装�
 | [model.ts](../src/domains/models/model.ts) | `ModelProfile`、`ModelsApi`、`ModelConfigurationState` 和内部端口 | 定义 API / Codex 来源、配置视图、目录、检测和连接结果；对外写入参数与内部存储 / 凭据分开。声明配置仓储、密钥保护、Codex 读取与模型运行时端口。 |
 | [providers.ts](../src/domains/models/providers.ts) | `PROVIDERS`、`providerDefinition`、`validateProfile`、`modelUnavailableReason` | 注册 provider、协议、凭据类型和端点能力；校验可保存字段；维护已确认的 Codex 订阅模型退役策略，供目录和激活流程共用，同时允许旧配置读取 / 编辑。 |
 
+### 2.11 任务运行时：`src/infrastructure/execution/`
+
+| 文件 | 职责 |
+| --- | --- |
+| [host.ts](../src/infrastructure/execution/host.ts) | 检测运行时、启动独立进程组、工具与凭据 RPC、启动身份回执、停止和退出确认。 |
+| [process.ts](../src/infrastructure/execution/process.ts) | CLI 路径 / 登录检查、PATH 补齐、进程组回收、重启时核对 PID 与随机身份。 |
+| [protocol.ts](../src/infrastructure/execution/protocol.ts) | 主进程 / 任务 worker 的内部 IPC 消息和运行时回调契约。 |
+| [pi.ts](../src/infrastructure/execution/pi.ts) | Pi SDK 执行会话、明确资源 / 工具、原生会话恢复和事件投影。 |
+| [shell.ts](../src/infrastructure/execution/shell.ts) | Pi bash 操作适配，命令保留在任务进程组，支持工具超时和中断。 |
+| [codex.ts](../src/infrastructure/execution/codex.ts) | 本机 Codex app-server JSON-RPC、原生 thread、动态工具、审批和 turn 结束协议。 |
+| [claude.ts](../src/infrastructure/execution/claude.ts) | Claude stream-json、原生 session、逐 Run 本地 MCP 工具桥与权限问题。 |
+| [json-lines.ts](../src/infrastructure/execution/json-lines.ts) | 两个 CLI 和 MCP 共用的限长 JSONL 帧解析，拒绝损坏和截断帧。 |
+| [desktop/task-worker.ts](../src/desktop/task-worker.ts) | 任务子进程入口，接收执行授权、路由运行时、回传工具 / 凭据请求与最终回执。 |
+| [desktop/task-mcp.ts](../src/desktop/task-mcp.ts) | Claude 启动的 stdio MCP 桥，仅转发当前 Run 暴露的工具。 |
+| [application/task-dispatch-tools.ts](../src/application/task-dispatch-tools.ts) | 常驻 Agent 派发 / 查询 / 取消 / 重试 / 回答 / 验收的工具定义。 |
+
 ## 3. 主要调用链
 
 ### 3.1 文字对话与业务工具
@@ -182,14 +200,14 @@ flowchart LR
 
 发送入口是 `App → window.orbit.sendMessage → conversation:send`。主进程先调用 `InteractionService.prepare`，再由 `RoomService.send` 串行化通道并提供最近历史，交给 `PiAgentHost.send` 和子进程中的 `PiSession.send`。
 
-模型调用工具时，`PiSession → worker → host → RoomService.execute → InteractionService.execute → WorkspaceService / FileRoomHistory`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。页面通过 `room:state` / `room:read` 读取统一投影，工作空间只提供任务和附件；不再拼接第二份回执。
+模型调用工具时，`PiSession → worker → host → RoomService.execute → InteractionService.execute → TaskExecutionService / WorkspaceService / FileRoomHistory`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。页面通过 `room:state` / `room:read` 读取统一投影，工作空间只提供任务和附件；不再拼接第二份回执。
 
 ### 3.2 直接保存、取消与附件
 
 | 用户操作 | 调用链 | 结果 |
 | --- | --- | --- |
 | 仅保存需求 | `App → orbit.submit → workspace:submit → WorkspaceService.submit / saveRequest` | 不调用模型；在一个事务内保存任务、用户输入和系统回执。 |
-| 取消待派发任务 | `App → orbit.cancelTask → task:cancel → WorkspaceService → TaskRepository → cancelPendingTask` | 更新为 `canceled`，返回最新工作空间。 |
+| 取消待派发任务 | `App → orbit.cancelTask → task:cancel → TaskExecutionService.cancel` | 更新为 `canceled`，返回最新工作空间。 |
 | 添加附件 | `App → orbit.pickAttachments → materials:pick → 系统选择器 → MaterialLibrary.importFile` | 导入副本并返回元信息；关联到需求发生在保存需求时。 |
 | 打开附件 | `App → orbit.openAttachment → materials:open → MaterialLibrary.require → shell.openPath` | 按附件 ID 打开本机副本。 |
 | 停止文字回复 | `App → orbit.stopReply → conversation:abort → PiAgentHost → PiSession.abort` | 中断当前模型回复，保留已经提交的任务。 |
@@ -208,6 +226,12 @@ flowchart LR
 `window.orbit.models → models:* IPC → ModelConfigurationService`，由应用服务调用配置仓储和模型运行时端口。激活时 `PiAgentHost → worker → PiSession.configure` 重建模型适配，保留同一个 Pi 会话；连接测试直接调用 `testModelConnection`，不创建会话或业务工具。
 
 worker 需要凭据时走 `credential → host → ModelConfigurationService.credential`，由主进程解密 API key 或只读 Codex 登录，再通过内部响应返回。renderer 只收到配置视图和安全错误。支持范围、选择优先级和 PR2 接口见 [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md)。
+
+### 3.5 独立任务执行
+
+`Room → InteractionService.dispatch_task → TaskExecutionService → ExecutionRuntimeHost → task-worker → Pi / Codex / Claude`。业务工具反向回到宿主，由 Run 身份限定读写；状态和事件同一事务提交。Planner 提交固定 DAG 后，宿主按依赖和并发限制启动 Worker。成果通过文件校验及运行时结束确认后进入待验收。重要事件投影到 Room，停止聊天不影响任务。
+
+`window.orbit.execution` 提供运行时设置、详情 / 事件分页、派发、重试、回答、验收和打开成果；取消沿用 `orbit.cancelTask`。每个 Run 的原生 session ID、PID 和随机身份写入 SQLite。任务文件在 `<userData>/tasks/<task-id>/`；具体目录与恢复规则见 [TASK_EXECUTION.md](TASK_EXECUTION.md)。
 
 ## 4. 状态与数据放在哪里
 
@@ -261,7 +285,8 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | 文件 | 入口 | 具体负责什么 |
 | --- | --- | --- |
 | [scripts/dev.mjs](../scripts/dev.mjs) | `npm run dev` | 先构建 Electron 代码，再启动 Vite 和 Electron，注入 `ORBIT_DEV_URL`，在退出时回收进程。页面支持热更新；Electron 及其依赖代码修改后要重启。 |
-| [scripts/build-electron.mjs](../scripts/build-electron.mjs) | `npm run build` 的 Electron 阶段 | 用 esbuild 生成 `main.cjs`、`preload.cjs` 和独立 ESM `agent-worker.mjs`。worker 的 npm 包保持外部依赖，保留 Pi 包自身的运行资源。 |
+| [scripts/task-live-smoke.mjs](../scripts/task-live-smoke.mjs) | `node scripts/task-live-smoke.mjs <runtime>` | 显式联网：真实 Electron / Pi 或原生 CLI，核验任务进展、文件、成果、验收与重启不重放。使用临时数据，报告输出到 artifacts。 |
+| [scripts/build-electron.mjs](../scripts/build-electron.mjs) | `npm run build` 的 Electron 阶段 | 用 esbuild 生成 `main.cjs`、`preload.cjs` 和独立 ESM `agent-worker.mjs`、`task-worker.mjs`、`task-mcp.mjs`。worker 的 npm 包保持外部依赖，保留 Pi 包自身的运行资源。 |
 | [scripts/setup-voice.mjs](../scripts/setup-voice.mjs) | `npm run setup:voice` | 下载固定版本的关键词模型压缩包，校验 SHA-256，解压指定文件到 `assets/voice/`，清理临时目录。 |
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
 | [scripts/room-ui-smoke.mjs](../scripts/room-ui-smoke.mjs) | `npm run test:desktop` 的第三阶段 | 真实 Electron / preload / Room / Pi，离线控制语音状态与模拟麦克风：统一历史、翻页位置、回执去重、旧页保留、暂停和手动切回、旧音频错误隔离、资源释放。 |
@@ -306,6 +331,8 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | 文件 | 验证范围 |
 | --- | --- |
 | [tests/workspace.test.ts](../tests/workspace.test.ts) | 保存需求的幂等性、同一 ID 不同内容的拒绝、明确的未执行回执、无效附件回滚、独立任务取消、附件副本及重启持久化。 |
+| [tests/execution-runtimes.test.ts](../tests/execution-runtimes.test.ts) | 实际 worker / IPC / MCP 桥、三种运行时协议、审批 / 输入、会话恢复、退出码、取消和进程组；Pi 使用真实 SDK 和本地文件工具。 |
+| [tests/fixtures/execution-cli.mjs](../tests/fixtures/execution-cli.mjs) | 可执行的 Codex / Claude 协议桩；模拟原生生命周期，通过真实工具通道提交固定 DAG 和成果，不读取账号。 |
 | [tests/agent.test.ts](../tests/agent.test.ts) | 真实 Pi SDK 对接本机模型桩，验证流式聊天、工具白名单、业务去重、上下文恢复、中断、服务错误、附件范围及未配置模型时保留输入。 |
 | [tests/agent-host.test.ts](../tests/agent-host.test.ts) | 通过真实 Node 子进程运行 worker，验证崩溃后恢复同一会话、不重放轮次、关闭时中断正在运行的回复。 |
 | [tests/models.test.ts](../tests/models.test.ts) | 多配置与密钥隔离、加密持久化、环境优先级、保存 / 切换失败回滚、回复中互斥、损坏文件保护、输入和目录验证、Codex 文件只读 / 轮换 / 过期。 |
@@ -337,7 +364,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | 唤醒词、模型或识别参数 | `assets/voice/keywords.txt`、`domains/voice/wake.ts` | `scripts/setup-voice.mjs`、模型来源说明及本地语音验证。 |
 | 数据库表或数据升级 | `infrastructure/database.ts` | 对应 repository / service，以及重启和兼容性验证；当前没有单独的 migrations 目录。 |
 | Room / session / 历史工具 | `application/room.ts`、`domains/conversation/history.ts`、`infrastructure/history/store.ts` | `ROOM_HISTORY.md`、Pi / Qwen 适配、Room / history / voice 测试；主动轮换策略待讨论。 |
-| 团队编排、执行会话、成果验收 | 先看 `PRODUCT.md` 与 `ARCHITECTURE.md` 的下一步 | 这些业务模块尚未实现。应新增对应业务用例、领域状态与执行会话，再通过交互工具接入。 |
+| 任务编排、执行会话、成果验收 | `application/task-execution.ts`、`domains/tasks/execution.ts`、`infrastructure/execution` | `TASK_EXECUTION.md`、执行 / 运行时测试、桌面 IPC。 |
 
 ## 8. 文档索引与维护
 
@@ -348,6 +375,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 当前模块边界、运行链路、状态归属、Pi 接入取舍与下一步。 |
 | [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md) | PR1 provider 范围、配置优先级与凭据边界、PR2 IPC 契约、使用示例和验证。 |
 | [ROOM_HISTORY.md](ROOM_HISTORY.md) | Room 后端和 UI 两 PR 边界、标识、存储、上下文、工具、迁移、参考资料与验证。 |
+| [TASK_EXECUTION.md](TASK_EXECUTION.md) | Task / Step / Run、DAG、目录、运行时协议、凭据边界、问题审批、成果与恢复。 |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | 本页：目录和逐文件职责、调用路径、维护入口。 |
 | [orbit-business-flow.html](orbit-business-flow.html) | Pi 接入前的业务链路可视化快照，基于 `main` 的 `d3ee5e1`（2026-10-11）。其中的文字入口描述不代表当前 Pi 实现；当前状态以源码与架构文档为准。 |
 

@@ -58,6 +58,14 @@ export class ModelConfigurationService {
     return { apiKey: this.secrets.decrypt(entry.encryptedApiKey) };
   }
 
+  executionCredential(profile: ModelProfile): ModelCredential | undefined {
+    const current = this.read().profiles.find(candidate => candidate.id === profile.id);
+    if (!current || current.providerId !== profile.providerId || current.source !== profile.source || current.baseUrl !== profile.baseUrl) {
+      throw new ModelConfigurationError('任务所用模型配置已删除或服务地址已改变，请恢复配置后重试。');
+    }
+    return this.credential(profile.id);
+  }
+
   detectCodex() { return this.codex.status(); }
   catalog(id: unknown) { return this.runtime.catalog(providerDefinition(id).id); }
 

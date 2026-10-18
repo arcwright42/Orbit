@@ -8,7 +8,7 @@ import { TaskFiles } from '../infrastructure/tasks/files';
 import { executionTools } from './task-tools';
 
 interface ActiveRun { handle: TaskRuntimeHandle; stopped?: 'cancel' | 'shutdown'; finished: Promise<void> }
-const activeRunStates = new Set(['starting', 'running', 'waiting']);
+const activeRunStates = new Set(['starting', 'running', 'waiting', 'unresolved']);
 const executableTaskStates = new Set(['queued', 'planning', 'running', 'interrupted', 'waiting']);
 
 /** The only owner of execution state. Runtime events are observations, tool calls are commands. */
@@ -30,7 +30,7 @@ export class TaskExecutionService {
   private commit<T>(taskId: string, type: string, message: string, work: () => T, run?: TaskRun): T {
     const committed = this.repository.transaction(() => {
       const result = work();
-      const event = this.repository.append({ taskId, type, message, stepId: run?.stepId, runId: run?.id });
+      const event = this.repository.append({ taskId, type, message, stepId: run?.stepId, runId: run?.id, taskStatus: this.repository.task(taskId).status });
       return { result, event };
     });
     // Listener failure cannot turn a committed command into a failed business operation.
@@ -156,12 +156,16 @@ export class TaskExecutionService {
   private current(runId: string): { run: TaskRun; step: TaskStep; task: Task } {
     const run = this.repository.run(runId); const task = this.repository.task(run.taskId);
     const step = this.repository.steps(run.taskId).find(step => step.id === run.stepId)!;
-    if (this.closing || this.active.get(runId)?.stopped || !activeRunStates.has(run.status) || step.currentRunId !== runId || ['canceling', 'canceled', 'completed'].includes(task.status)) throw new Error('这次执行已停止，拒绝迟到的工具或事件。');
+    if (this.closing || this.active.get(runId)?.stopped || run.status === 'unresolved' || !activeRunStates.has(run.status) || step.currentRunId !== runId || ['canceling', 'canceled', 'completed'].includes(task.status)) throw new Error('这次执行已停止，拒绝迟到的工具或事件。');
     return { run, step, task };
   }
   private observe(runId: string, event: TaskRuntimeEvent) {
     let run: TaskRun;
-    try { ({ run } = this.current(runId)); } catch { return; }
+    try { ({ run } = this.current(runId)); } catch (error) {
+      // A process receipt is a grant to start execution, so a rejected receipt must reach the host.
+      if (event.type === 'process') throw error;
+      return;
+    }
     if (event.type === 'output') { this.files.log(run.taskId, run.id, { at: new Date().toISOString(), ...event }); return; }
     this.commit(run.taskId, 'run.' + event.type, event.type === 'activity' ? event.message : event.type === 'session' ? '已绑定原生执行会话。' : '执行进程已启动。', () => {
       if (event.type === 'session') run.nativeSession = boundedText(event.sessionId, '原生会话标识', 4096);
@@ -239,6 +243,16 @@ export class TaskExecutionService {
     const run = this.repository.run(runId); const task = this.repository.task(run.taskId);
     const step = this.repository.steps(run.taskId).find(step => step.id === run.stepId)!;
     if (!activeRunStates.has(run.status) || step.currentRunId !== run.id) return;
+    if (outcome.status === 'unresolved') {
+      this.commit(task.id, 'recovery.blocked', outcome.error ?? '旧执行尚未确认停止，请检查后重试。', () => {
+        for (const question of run.questions) if (question.kind === 'approval' && question.status === 'pending') question.status = 'expired';
+        run.status = 'unresolved'; run.error = outcome.error; this.repository.saveRun(run);
+        step.status = 'interrupted'; step.error = outcome.error; this.repository.saveStep(step);
+        if (task.status !== 'canceling') task.status = 'interrupted';
+        this.repository.saveTask(task);
+      }, run);
+      return;
+    }
     const stop = this.active.get(runId)?.stopped;
     let status: 'completed' | 'failed' | 'interrupted' | 'canceled' = stop === 'cancel' || task.status === 'canceling' ? 'canceled' : stop === 'shutdown' || this.closing ? 'interrupted' : outcome.status;
     let error = outcome.error;

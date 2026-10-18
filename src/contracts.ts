@@ -1,6 +1,6 @@
 // Serializable application DTOs. Renderer never imports persistence or runtime code.
 import type { ModelsApi } from './domains/models/model';
-import type { TaskExecution, TaskStatus } from './domains/tasks/execution';
+import type { TaskExecution, TaskStatus, TaskExecutionApi } from './domains/tasks/execution';
 export interface Attachment {
   id: string;
   name: string;
@@ -64,6 +64,7 @@ export interface Conversation {
 
 export interface OrbitApi {
   models: ModelsApi;
+  execution: TaskExecutionApi;
   room: {
     read(page?: { before?: number; limit?: number }): Promise<Conversation>;
     onChanged(listener: (state: Conversation) => void): () => void;

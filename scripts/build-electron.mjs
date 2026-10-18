@@ -9,7 +9,7 @@ await build({
 
 // Pi is ESM and ships runtime resources. Keep it as an installed dependency in its worker.
 await build({
-  entryPoints: ['src/desktop/agent-worker.ts'], outfile: 'dist-electron/agent-worker.mjs',
+  entryPoints: ['src/desktop/agent-worker.ts', 'src/desktop/task-worker.ts', 'src/desktop/task-mcp.ts'], outdir: 'dist-electron', outExtension: { '.js': '.mjs' },
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
   packages: 'external', sourcemap: true,
 });

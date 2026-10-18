@@ -186,3 +186,19 @@ test('failure retry retains completed branches and a settings change only affect
     assert.equal(f.service.detail(task.id).steps.find(step => step.id === 'first')?.status, 'completed');
   } finally { await f.cleanup(); }
 });
+
+test('an unresolved process exit retains its lease and rejects late tools until reconciliation succeeds', async () => {
+  const f = await fixture();
+  try {
+    f.service.configure({ runtime: 'pi', maxConcurrency: 1 });
+    const task = f.task(); await f.service.dispatch(task.id, 'direct'); await until(() => f.runtime.started.length === 1);
+    const run = f.runtime.started[0]; run.finish({ status: 'unresolved', error: 'still alive' });
+    await until(() => f.service.detail(task.id).task.status === 'interrupted');
+    await assert.rejects(run.tool('submit_result', { summary: 'late', artifacts: [] }, 'late'), /已停止/);
+    const other = f.task(); await f.service.dispatch(other.id, 'direct');
+    await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(f.runtime.started.length, 1);
+    f.runtime.unresolved = true; await assert.rejects(f.service.retry(task.id), /旧进程/);
+    f.runtime.unresolved = false; await f.service.retry(task.id); await until(() => f.runtime.started.length === 2);
+    assert.equal(f.runtime.started[1].input.run.attempt, 2);
+  } finally { await f.cleanup(); }
+});

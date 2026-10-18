@@ -15,7 +15,8 @@ export type TaskRuntimeEvent =
   | { type: 'process'; pid: number; identity: string }
   | { type: 'output'; text: string }
   | { type: 'activity'; message: string };
-export interface TaskRuntimeOutcome { status: 'completed' | 'failed' | 'interrupted'; error?: string }
+/** unresolved keeps the execution lease until the host positively reconciles the old process. */
+export interface TaskRuntimeOutcome { status: 'completed' | 'failed' | 'interrupted' | 'unresolved'; error?: string }
 export interface TaskRuntimeHandle { done: Promise<TaskRuntimeOutcome>; stop(): Promise<void> }
 export interface TaskRuntimePort {
   start(input: TaskRuntimeInput, event: (event: TaskRuntimeEvent) => void,
