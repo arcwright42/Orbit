@@ -11,6 +11,7 @@ try {
   app = await electron.launch({ args: ['.', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'], env });
   const page = await app.firstWindow(); const errors = [];
   page.on('pageerror', e => errors.push(e.message));
+  await page.evaluate(() => { window.voiceCheck = []; window.orbit.onVoice(event => { if (event.type !== 'audio') window.voiceCheck.push(event); }); });
   await page.getByRole('button', { name: '开始语音', exact: true }).click();
   await page.getByText('正在聆听', { exact: true }).waitFor({ timeout: 25000 });
   await page.getByRole('button', { name: '结束语音', exact: true }).last().click();
@@ -22,4 +23,12 @@ try {
   await page.getByRole('button', { name: '结束语音', exact: true }).click();
   assert.deepEqual(errors, []);
   console.log('Voice UI smoke passed: fake microphone, official realtime session, stop, local wake initialization.');
+} catch (error) {
+  const page = app?.windows()[0];
+  if (page) {
+    await page.screenshot({ path: 'artifacts/orbit-voice-failure.png' }).catch(() => {});
+    console.error('Public voice events:', await page.evaluate(() => window.voiceCheck).catch(() => []));
+    console.error('Public voice panel:', await page.locator('.voice-panel').innerText().catch(() => 'not present'));
+  }
+  throw error;
 } finally { if (app) await app.close(); await rm(dir, { recursive: true, force: true }); }
