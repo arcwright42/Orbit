@@ -26,7 +26,8 @@ try {
   assert.equal((await page.evaluate(() => window.orbit.workspace())).tasks.length, 0);
   await page.getByRole('textbox', { name: '你的需求' }).fill('为我的读书笔记设计一个个人网站');
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
-  await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  await expect(page.locator('.session-tool summary')).toContainText('保存需求');
+  await expect(page.locator('.session-tool summary')).toContainText('已完成');
   await page.getByRole('button', { name: '切换侧栏' }).click();
   await page.getByRole('navigation').getByRole('button', { name: /任务/ }).click();
   await page.screenshot({ path: 'artifacts/orbit-tasks.png' });
@@ -43,7 +44,8 @@ try {
   app = await electron.launch({ args: ['.'], env });
   page = await app.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
-  await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  await expect(page.locator('.session-tool summary')).toContainText('保存需求');
+  await expect(page.locator('.session-tool summary')).toContainText('已完成');
   const restored = await page.evaluate(() => window.orbit.workspace());
   assert.deepEqual(restored, initial);
   const resumed = await page.evaluate(() => window.orbit.conversation());

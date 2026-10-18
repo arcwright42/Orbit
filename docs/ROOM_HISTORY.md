@@ -67,7 +67,13 @@ const unsubscribe = window.orbit.room.onChanged(state => { /* 按 id 合并，�
 
 ## 会话事件展示
 
-`SessionTimeline` 将时间线收敛为 User、Assistant、Tool 三类。工具默认折叠，只显示名称、状态和时间，可用鼠标或键盘展开参数和结果。对应的任务回执与入口并入同轮工具事件；只有旧记录或“仅保存需求”产生的本地回执独立显示为 Tool / 本地记录。助手流式输出、语音标识、中断 / 失败状态、附件、任务入口以及历史翻页保持可用。会话区域采用直角输入框与细分隔线，无头像气泡或卡片阴影。
+`SessionTimeline` 将时间线收敛为 User、Assistant、Tool 三类。用户输入靠右，助手正文靠左，以位置和轻底色区分，不将事件名和时间戳逐条排成标题。工具默认折叠成状态行，可用鼠标或键盘展开名称、时间、参数和结果。对应的任务回执与入口并入同轮工具事件；旧记录或“仅保存需求”产生的本地回执也收起为“已记录需求”，完整回执仍可展开读取。助手流式输出、语音标识、中断 / 失败状态、附件、任务入口以及历史翻页保持可用。会话区域使用直角输入框和用户消息块，无逐条横线、头像和卡片阴影。助手正文支持 Markdown 段落、列表、代码和 GFM 表格；不执行原始 HTML，也不自动加载远程图片。
+
+本次界面参考（2026-10-19）：
+
+- [Open WebUI UserMessage](https://github.com/open-webui/open-webui/blob/91ea4e3421d1d8069f13d4a463fcb5986d94ea60/src/lib/components/chat/Messages/UserMessage.svelte)：用户消息靠右、宽度受限，正文与输入区域保持一致阅读宽度。Orbit 按要求使用直角。
+- [Open WebUI ToolCallDisplay](https://github.com/open-webui/open-webui/blob/91ea4e3421d1d8069f13d4a463fcb5986d94ea60/src/lib/components/common/ToolCallDisplay.svelte) 与 [LibreChat ToolCallGroup](https://github.com/LibreChat-AI/LibreChat/blob/e081b566a42d3a83b8102157bd7806cf4ff63b17/client/src/components/Chat/Messages/Content/ToolCallGroup.tsx)：工具采用紧凑状态与按需展开。Orbit 保留每次实际调用，不引入其调度机制。
+- [LobeHub ChatItem](https://github.com/lobehub/lobehub/blob/0e6d403e859b59a0a5cfda37849b804cadf84523/src/features/Conversation/ChatItem/ChatItem.tsx)：区分用户消息块与助手正文；次要信息不占据正文层级。这里只参考布局和交互，自行实现 Orbit 组件。
 
 ## 调研取舍
 
