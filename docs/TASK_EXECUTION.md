@@ -1,6 +1,6 @@
 # 任务执行
 
-Orbit 自己维护任务编排和业务状态，运行时通过端口接入。实现分为三个 PR：任务领域与调度、Pi/Codex/Claude 适配及应用入口、最小任务 UI。目前桌面主进程和常驻 Agent 已接通执行；任务详情和运行时设置界面由第三个 PR 补齐。
+Orbit 自己维护任务编排和业务状态，运行时通过端口接入。实现分为三个 PR：任务领域与调度、Pi/Codex/Claude 适配及应用入口、最小任务 UI。桌面主进程、常驻 Agent、任务详情和运行时设置均已接通执行。
 
 ## 状态与目录
 
@@ -42,9 +42,13 @@ SQLite 是业务事实来源：`tasks` 保留既有 JSON 记录；新增 `task_s
 
 ## 核验
 
+任务看板按真实状态分组，并支持按具体状态筛选。详情页展示步骤及依赖、当前尝试、成果文件和进展分页；可以直接派发 / 先规划、取消、重试未完成步骤、回答问题、明确允许 / 拒绝操作、验收或打开成果目录。常驻 Agent 不能代替用户批准原生权限请求。设置页统一选择运行时和全局并发，不提供逐步骤运行时选择。重试保留已完成成果，验收时仍由后端核验文件。
+
 `tests/task-execution.test.ts` 使用真实 SQLite、任务文件和可控运行时验证 DAG 并发/汇合、派发去重、候选结果提交、工具去重、取消迟到事件、成果越界和变更、问题跨重启、旧进程核对及失败重试保留已完成分支。
 
 `tests/execution-runtimes.test.ts` 构建并启动真实 worker，以本地可执行 CLI 协议桩验证 Codex JSON-RPC、Claude stream-json + 实际 MCP 桥、审批、问题、原生 session 恢复、非零退出及进程组清理；Pi 使用真实 SDK 和文件工具对接本地 HTTP 模型桩执行 DAG。离线验证不代表云端账号实测。
+
+`scripts/task-ui-smoke.mjs` 通过真实 Electron 页面验证整条操作链：Pi 规划与依赖、成果打开 / 验收、运行时设置、输入与批准 / 拒绝 / 重试、取消与停止主回复互不影响、事件分页 / 焦点、隐藏窗口继续执行，以及更改系统运行时后重启仍恢复原任务运行时。已加入 `npm run test:desktop`，截图在 `artifacts/`。
 
 先构建，再显式运行 `node scripts/task-live-smoke.mjs codex-cli`（或 `pi` / `claude-cli`），会消耗真实模型额度。脚本通过 Electron IPC 在临时目录派发任务，核验进展工具、真实文件、成果路径、验收与重启不重放，并把报告写入 `artifacts/task-live-<runtime>.json`。Pi 模式复用本地 Codex 登录，模型由 `ORBIT_CODEX_SMOKE_MODEL` 选择。CLI 模式可能由客户端正常刷新其登录；Orbit 不自行读取或改写 CLI 凭据。
 

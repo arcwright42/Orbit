@@ -4,7 +4,7 @@
 
 逐目录、逐文件的职责与修改入口见 [Repository Map](REPOSITORY_MAP.md)；启动与配置见 [README](../README.md)，产品目标见 [PRODUCT.md](PRODUCT.md)。
 
-Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0。当前提供持续文字交互、需求管理、附件、任务看板、Qwen 实时语音与本地唤醒。已接入独立任务执行后端，支持直接执行或固定 DAG 编排；最小任务执行 UI 在后续 PR 补齐。
+Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0。当前提供持续文字交互、需求管理、附件、任务看板、Qwen 实时语音与本地唤醒。已接入独立任务执行和最小 UI，支持直接执行或固定 DAG 编排、步骤进展、问题审批与成果验收。
 
 ## 模块职责
 
@@ -71,9 +71,8 @@ Qwen 继续走官方实时协议，由 Room 与 Pi 串行编排。文字输入�
 
 ## 下一步业务层
 
-1. 补齐任务详情、步骤 / 成果、问题审批和系统运行时设置 UI。
-2. 按真实使用情况讨论动态重规划、Agent 协作消息与更强执行隔离。
-3. 增加专用附件解析，讨论主动 session 轮换策略和 Qwen 摘要。
+1. 按真实使用情况讨论动态重规划、Agent 协作消息与更强执行隔离。
+2. 增加专用附件解析，讨论主动 session 轮换策略和 Qwen 摘要。
 
 ## 验证
 

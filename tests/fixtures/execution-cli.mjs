@@ -21,6 +21,7 @@ const response = message => {
 };
 async function work(prompt, toolNames, call, resumed, permission) {
   await call('report_progress', { message: resumed ? 'fixture resumed native session' : 'fixture started' });
+  if (prompt.includes('fixture:events')) for (let index = 0; index < 120; index++) await call('report_progress', { message: '验证进展 ' + index });
   if (prompt.includes('fixture:pause') && !resumed) await new Promise(() => setInterval(() => {}, 1000));
   if (prompt.includes('fixture:input')) {
     const answer = await call('request_input', { question: '文件要使用什么颜色？' });
