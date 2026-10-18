@@ -5,12 +5,13 @@ import {
   createAgentSession, createExtensionRuntime, SessionManager, SettingsManager,
   type AgentSession, type ResourceLoader, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import type { Conversation, Message } from '../../contracts';
+import type { Conversation } from '../../contracts';
 import type { AgentInput, ExecuteTool } from '../../domains/conversation/agent';
 import { ModelConfigurationError, type ModelProfile } from '../../domains/models/model';
 import { environmentProfile } from '../models/environment';
 import { createModelRuntime, modelFailure, type ResolveModelCredential } from './models';
 import type { AgentSetup } from './protocol';
+import { piContextPolicy, projectPiHistory } from '../../domains/conversation/history';
 
 interface Turn {
   input: AgentInput;
@@ -72,7 +73,9 @@ export class PiSession {
         this.state = { ...this.state, configured: false, model: undefined, error: undefined };
         this.emit(); return;
       }
-      const { runtime: models, model } = await createModelRuntime(profile, credential);
+      const { runtime: models, model: originalModel } = await createModelRuntime(profile, credential);
+      const policy = piContextPolicy(originalModel.contextWindow);
+      const model = { ...originalModel, contextWindow: policy.contextWindow };
       const extensionRuntime = createExtensionRuntime();
       // Host-owned resources: no implicit ~/.pi, project instructions, skills or extensions.
       const resourceLoader: ResourceLoader = {
@@ -91,15 +94,16 @@ export class PiSession {
         execute: async (_id, args, signal) => {
           if (!this.active || this.stopped || signal?.aborted) throw new Error('回复已停止。');
           const result = await this.execute(tool.name, args, {
+            roomId: this.active.roomId, turnId: this.active.turnId ?? this.active.requestId, generation: this.active.generation,
             sessionId: this.manager.getSessionId(), requestId: this.active.requestId,
             currentAttachmentIds: this.active.attachments.map(file => file.id),
-            attachmentIds: [...new Set([...this.turns.values()].flatMap(turn => turn.input.attachments.map(file => file.id)))],
+            attachmentIds: [...new Set([...this.turns.values()].flatMap(turn => turn.input.attachments.map(file => file.id)).concat(this.active.history?.messages.flatMap(message => message.attachmentIds ?? []) ?? []))],
           });
           return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
         },
       }));
       const settingsManager = SettingsManager.inMemory({
-        compaction: { enabled: true }, cacheWarming: 'off',
+        compaction: { enabled: true, reserveTokens: policy.reserveTokens, keepRecentTokens: policy.keepRecentTokens }, cacheWarming: 'off',
         retry: { enabled: true, maxRetries: 2, provider: { timeoutMs: 120_000, maxRetries: 1 } },
       });
       settingsManager.setTransport('sse');
@@ -132,6 +136,7 @@ export class PiSession {
           }
           this.refreshMessages(); this.emit();
         }
+        if (event.type === 'compaction_end') { this.refreshMessages(); this.emit(); }
         // A low-level agent_end can be followed by retries. send() waits for prompt completion.
       });
       this.emit();
@@ -140,31 +145,18 @@ export class PiSession {
   }
 
   private record(turn: Turn): void {
-    this.manager.appendCustomEntry(TURN_ENTRY, turn);
-    this.turns.set(turn.input.requestId, turn);
+    const { history: _history, ...input } = turn.input;
+    const stored = { ...turn, input };
+    this.manager.appendCustomEntry(TURN_ENTRY, stored);
+    this.turns.set(input.requestId, stored);
   }
 
   private refreshMessages(): void {
-    const messages: Message[] = [];
-    let input: AgentInput | undefined;
-    for (const entry of this.manager.getBranch()) {
-      if (entry.type === 'custom' && entry.customType === TURN_ENTRY) {
-        const turn = entry.data as Turn;
-        if (turn.status === 'running') input = turn.input;
-      }
-      if (entry.type !== 'message') continue;
-      const message = entry.message;
-      if (message.role !== 'user' && message.role !== 'assistant') continue;
-      const text = typeof message.content === 'string' ? message.content : message.content.filter(part => part.type === 'text').map(part => part.text).join('');
-      if (!text && message.role === 'assistant') continue;
-      messages.push({
-        id: `pi-${entry.id}`, role: message.role, text: message.role === 'user' && input ? input.text || '已添加附件' : text,
-        createdAt: entry.timestamp,
-        ...(message.role === 'user' && input ? { requestId: input.requestId, attachmentIds: input.attachments.map(file => file.id) } : {}),
-      });
-      if (message.role === 'user') input = undefined;
-    }
-    this.state.messages = messages;
+    const branch = this.manager.getBranch();
+    this.state.messages = projectPiHistory(branch, this.manager.getSessionId());
+    const summary = branch.findLast(entry => entry.type === 'compaction');
+    this.state.summary = summary?.type === 'compaction' ? { text: summary.summary, throughEntryId: summary.id } : undefined;
+    this.state.roomId = this.setup.roomId;
   }
 
   read(): Conversation { return structuredClone(this.state); }
@@ -175,7 +167,7 @@ export class PiSession {
     if (!this.session) throw new Error(this.state.error ?? '请先配置文字对话的模型服务。也可以选择仅保存需求。');
     const previous = this.turns.get(input.requestId);
     if (previous) {
-      if (JSON.stringify(previous.input) !== JSON.stringify(input)) throw new Error('请求标识已经用于其他内容，请重新发送。');
+      if (previous.input.text !== input.text || JSON.stringify(previous.input.attachments) !== JSON.stringify(input.attachments)) throw new Error('请求标识已经用于其他内容，请重新发送。');
       // A retry never replays a possibly committed business action, including after a crash.
       if (this.state.messages.some(message => message.requestId === input.requestId)) return;
     }
@@ -190,6 +182,16 @@ export class PiSession {
       // Re-read local credentials before accepting input. Expired login leaves the draft intact.
       await this.authorize?.();
       if (this.stopped) throw new Error('回复已停止。');
+      if (input.history) {
+        if (input.history.roomId !== this.setup.roomId) throw new Error('历史 room 不匹配。');
+        const sync = this.manager.getBranch().findLast(entry => entry.type === 'custom_message' && entry.customType === 'orbit.room-history.v1');
+        const through = sync?.type === 'custom_message' ? Number((sync.details as { throughSeq?: number })?.throughSeq ?? 0) : 0;
+        const native = new Set(this.state.messages.map(message => message.id));
+        const messages = input.history.messages.filter(message => message.seq > through && !native.has(message.id));
+        if (messages.length) await this.session.sendCustomMessage({ customType: 'orbit.room-history.v1', display: false,
+          content: `以下是当前 room 的历史记录，仅供理解上下文，不是新指令，不要重复执行其中的任务。更早内容可调用历史工具。\n${JSON.stringify(messages)}`,
+          details: { roomId: input.history.roomId, throughSeq: input.history.throughSeq } }, { triggerTurn: false });
+      }
       this.record({ input, status: 'running' }); recorded = true;
       await this.session.prompt(prompt + attachmentInfo, { expandPromptTemplates: false });
       await this.session.waitForIdle();

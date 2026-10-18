@@ -1,10 +1,15 @@
 import type { Attachment, Conversation } from '../../contracts';
+import type { HistoryContext } from './history';
 
 // Orbit's port: application code does not depend on Pi classes or provider protocols.
 export interface AgentInput {
   requestId: string;
   text: string;
   attachments: Attachment[];
+  roomId?: string;
+  turnId?: string;
+  generation?: number;
+  history?: HistoryContext;
 }
 
 export interface BusinessTool {
@@ -14,6 +19,9 @@ export interface BusinessTool {
 }
 
 export interface ToolContext {
+  roomId?: string;
+  turnId?: string;
+  generation?: number;
   sessionId: string;
   requestId: string;
   attachmentIds: string[];

@@ -4,7 +4,7 @@ await build({
   entryPoints: { main: 'src/desktop/main.ts', preload: 'src/desktop/preload.ts' },
   outdir: 'dist-electron', outExtension: { '.js': '.cjs' },
   bundle: true, platform: 'node', format: 'cjs', target: 'node22',
-  external: ['electron'], sourcemap: true,
+  external: ['electron', '@vscode/ripgrep'], sourcemap: true,
 });
 
 // Pi is ESM and ships runtime resources. Keep it as an installed dependency in its worker.

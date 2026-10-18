@@ -89,7 +89,7 @@ try {
   report.checks.contextRecall = true;
   stage = 'business-tool';
   await sendThroughUi('这是隔离测试工作空间。请调用 list_tasks 查询当前任务，只告诉我任务数量，不要保存或创建需求。');
-  const sessionDirectory = join(directory, 'agent', 'sessions');
+  const sessionDirectory = join(directory, 'rooms', 'main', 'runtime', 'pi', 'sessions');
   const sessionFiles = (await readdir(sessionDirectory)).filter(file => file.endsWith('.jsonl'));
   const sessionText = (await Promise.all(sessionFiles.map(file => readFile(join(sessionDirectory, file), 'utf8')))).join('\n');
   const entries = sessionText.split('\n').filter(Boolean).map(line => JSON.parse(line));

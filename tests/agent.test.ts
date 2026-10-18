@@ -47,7 +47,7 @@ test('real Pi SDK streams chat, restricts tools, persists context and deduplicat
     assert.equal(f.workspace.snapshot().tasks[0].status, 'pending');
     assert.equal(f.workspace.snapshot().tasks[0].brief, input.text);
     await assert.rejects(f.agent.send({ ...input, text: 'different' }), /其他内容/);
-    assert.ok(f.server.requests.every(request => request.tools?.map(tool => tool.function.name).sort().join(',') === 'list_tasks,save_request'));
+    assert.ok(f.server.requests.every(request => request.tools?.map(tool => tool.function.name).sort().join(',') === 'list_tasks,read_history,save_request,search_history'));
     assert.ok(!JSON.stringify(f.server.requests).includes('PRIVATE FILE CONTENT'));
     const before = f.agent.read(); await f.agent.close();
     const restarted = await f.open();
