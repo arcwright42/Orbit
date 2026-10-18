@@ -4,7 +4,7 @@
 
 逐目录、逐文件的职责与修改入口见 [Repository Map](REPOSITORY_MAP.md)；启动与配置见 [README](../README.md)，产品目标见 [PRODUCT.md](PRODUCT.md)。
 
-Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0。当前提供持续文字交互、需求管理、附件、任务看板、Qwen 实时语音与本地唤醒。自动团队编排与任务执行尚未接入。
+Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0。当前提供持续文字交互、需求管理、附件、任务看板、Qwen 实时语音与本地唤醒。已接入独立任务执行后端，支持直接执行或固定 DAG 编排；最小任务执行 UI 在后续 PR 补齐。
 
 ## 模块职责
 
@@ -18,14 +18,14 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 | `src/application/models.ts` | 多配置管理、显式选择、切换与持久化回滚 | 不依赖 Electron 或 Pi SDK |
 | `src/domains/models` | provider 注册、配置验证、对外 DTO 和内部端口 | API 配置与本地 Codex 登录分开建模 |
 | `src/domains/conversation` | Agent 运行接口、输入和工具契约、系统回执 | 不绑定具体 SDK 或模型供应商 |
-| `src/domains/tasks` | 任务、校验、请求去重、待派发取消 | 当前支持本地需求管理 |
+| `src/domains/tasks` | 任务、校验、请求去重、待派发取消 | Task / Step / Run、固定 DAG、运行时端口与持久事件 |
 | `src/domains/materials` | 附件副本和元信息 | 内容解析尚未接入 |
-| `src/domains/voice` | Qwen WebSocket 会话、本地关键词检测 | 共享四个工具，Qwen 历史注入与事件关联 |
+| `src/domains/voice` | Qwen WebSocket 会话、本地关键词检测 | 共享业务工具，Qwen 历史注入与事件关联 |
 | `src/infrastructure/pi` | SDK 适配、进程协议、会话恢复、模型配置与事件投影 | 消费官方 SDK，不复制或修改 Pi 内核 |
 | `src/infrastructure/models` | 原子配置文件、系统密钥保护、Codex 只读凭据、环境兼容 | 凭据读取和持久化留在主进程 |
 | `src/infrastructure/history` | 按 session 归档、迁移、恢复、grep / read | 只读工具范围限当前 room 的历史文件 |
 | `src/infrastructure/database.ts` | SQLite 初始化与事务 | 业务状态规则由领域负责 |
-| `src/contracts.ts` | 可序列化的客户端应用接口 | 不向界面传递密钥、Pi 对象或本机文件路径 |
+| `src/contracts.ts` | 可序列化的客户端应用接口 | 不向界面传递密钥或 Pi 对象；任务目录和成果路径是明确的用户可见数据 |
 
 ## 文字业务链路
 
@@ -40,13 +40,13 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 
 ## 状态归属与恢复
 
-任务执行基础层新增 Task → Step → Run 和固定依赖调度，状态与事件共用 `orbit.sqlite` 事务。当前 PR 尚未将运行时接到桌面入口，真实执行能力在后续接入 PR 启用；详见 [任务执行](TASK_EXECUTION.md)。
+任务执行基础层新增 Task → Step → Run 和固定依赖调度，状态与事件共用 `orbit.sqlite` 事务。桌面主进程装配三种运行时，常驻 Agent 通过 dispatch_task 派发独立执行会话；详见 [任务执行](TASK_EXECUTION.md)。
 
 - **Pi 原生 JSONL**：`rooms/main/runtime/pi/sessions/` 保存模型消息、工具结果、会话树和压缩记录。
 - **Room 可见历史**：`rooms/main/history/` 按 session 保存文字、语音转写、系统回执和 Pi 压缩摘要，生成统一时间线与历史工具结果。
 - **Pi 自定义条目**：保存 Orbit 请求标识、输入及附件关联、轮次状态。相同标识的不同内容会拒绝；已接收轮次不会在网络重试或重启后自动重放。
 - **SQLite**：保存业务任务、系统回执和附件元信息。业务工具以 room 标识和轮次标识生成稳定的去重键，每轮最多创建一项需求。任务与回执在一个事务提交。
-- **文件副本**：由资料领域管理。模型目前只接收附件名称、大小和标识，不能读取内容；工具只能关联这段对话已经提供的附件。
+- **文件副本**：由资料领域管理。常驻模型只接收附件名称、大小和标识；任务执行 Agent 可读取任务目录中的附件副本。工具只能关联这段对话已经提供的附件。
 - **模型配置**：`models.json` 保存配置、active ID 和系统加密后的 API key；Codex token 只从用户文件按需读取，不复制、不刷新、不回写。配置文件存在后不再自动使用环境变量。
 - **异常恢复**：进程崩溃会结束界面的运行状态，下一次访问重建进程并恢复原会话。未确认结束的轮次标记中断，保留已提交任务，不自动重新执行。
 - **停止与退出**：停止按钮中断当前回复，不取消已保存的业务任务。应用退出先中断并关闭 Agent，再关闭数据库。关闭 macOS 窗口仍保留应用。
@@ -57,7 +57,7 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 
 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-ai` 固定为 1.3.0。Pi SDK 作为 ESM 依赖运行在独立 worker，构建脚本保留包自身的运行资源；不把 Pi 打入网页，也不另装 CLI。最低 Node.js 版本为 22.19。
 
-通过 `ResourceLoader` 明确提供资源，不读取外部扩展、技能、MCP 或项目规则。当前工具白名单是 `list_tasks`、`save_request`、`read_history`、`search_history`，两个通道共用定义和执行服务。资源配置、凭据与会话目录独立于用户的 `~/.pi`。主进程管理模型配置和凭据，worker 通过内部 RPC 按需获取 API key 或有效 Codex access token；不把借用的登录放入 Pi OAuth 存储。
+通过 `ResourceLoader` 明确提供资源，不读取外部扩展、技能、MCP 或项目规则。当前工具白名单定义在 `interaction.ts` 和 `task-dispatch-tools.ts`，包含任务派发 / 管理、保存需求和两个只读历史工具，两个通道共用定义和执行服务。资源配置、凭据与会话目录独立于用户的 `~/.pi`。主进程管理模型配置和凭据，worker 通过内部 RPC 按需获取 API key 或有效 Codex access token；不把借用的登录放入 Pi OAuth 存储。
 
 PR1 支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 和本地 Codex ChatGPT 登录。回复中禁止配置变更，空闲切换复用 Pi `SessionManager` 保留历史。连接测试使用无工具的单次调用，不创建会话或任务。`window.orbit.models` 为 PR2 提供配置、模型目录、检测、测试和激活接口；当前未修改模型设置 UI。详细约束与示例见 [模型配置文档](MODEL_PROVIDERS.md)。
 
@@ -71,12 +71,9 @@ Qwen 继续走官方实时协议，由 Room 与 Pi 串行编排。文字输入�
 
 ## 下一步业务层
 
-1. 选定最小执行场景，增加任务绑定的独立 Pi 执行会话、工作目录和执行工具集。
-2. 在应用层实现团队编排、派发、进度与执行取消，保持常驻交互职责独立。
-3. 接入需要用户决定的问题、成果及验收，按实际回执更新业务状态。
-4. 增加附件处理，讨论主动 session 轮换策略和 Qwen 摘要。
-
-本次引入 SDK 不代表这些执行能力已经完成。
+1. 补齐任务详情、步骤 / 成果、问题审批和系统运行时设置 UI。
+2. 按真实使用情况讨论动态重规划、Agent 协作消息与更强执行隔离。
+3. 增加专用附件解析，讨论主动 session 轮换策略和 Qwen 摘要。
 
 ## 验证
 

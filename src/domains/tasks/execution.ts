@@ -6,7 +6,7 @@ export const DEFAULT_EXECUTION_SETTINGS: ExecutionSettings = { runtime: 'pi', ma
 export interface RuntimeSelection { runtime: ExecutionRuntime; model?: ModelProfile }
 export type TaskStatus = 'pending' | 'queued' | 'planning' | 'running' | 'waiting' | 'interrupted' | 'canceling' | 'canceled' | 'failed' | 'review' | 'completed';
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'interrupted' | 'completed' | 'failed' | 'canceled';
-export type RunStatus = 'starting' | 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted' | 'canceled';
+export type RunStatus = 'starting' | 'running' | 'waiting' | 'unresolved' | 'completed' | 'failed' | 'interrupted' | 'canceled';
 export interface PlanStep { id: string; name: string; instruction: string; dependsOn: string[] }
 export interface TaskPlan { version: 1; steps: PlanStep[] }
 export interface TaskExecution {
@@ -51,10 +51,10 @@ export interface TaskRun {
   startedAt: string;
   endedAt?: string;
 }
-export interface TaskEvent { seq: number; taskId: string; stepId?: string; runId?: string; type: string; message: string; createdAt: string }
+export interface TaskEvent { seq: number; taskId: string; stepId?: string; runId?: string; type: string; message: string; createdAt: string; taskStatus?: TaskStatus }
 export interface TaskDetail { task: import('../../contracts').Task; steps: TaskStep[]; runs: TaskRun[]; events: TaskEvent[]; nextBefore?: number }
 export interface RuntimeAvailability { runtime: ExecutionRuntime; available: boolean; message: string; version?: string }
-export interface ExecutionConfiguration { settings: ExecutionSettings; runtimes: RuntimeAvailability[] }
+export interface ExecutionConfiguration { settings: ExecutionSettings; runtimes: RuntimeAvailability[]; error?: string }
 export interface TaskExecutionApi {
   configuration(): Promise<ExecutionConfiguration>;
   configure(settings: ExecutionSettings): Promise<ExecutionConfiguration>;

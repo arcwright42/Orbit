@@ -28,10 +28,31 @@ export async function createModelServer() {
       choices: [{ index: 0, delta, finish_reason: finish }],
     })}\n\n`);
     chunk({ role: 'assistant' });
-    if (text?.includes('慢回复')) {
+    const taskTools = body.tools?.some(tool => ['submit_result', 'submit_plan'].includes(tool.function.name));
+    if (text?.includes('慢回复') || taskTools && text.includes('fixture:pause') && !text.includes('这是恢复/重试')) {
       chunk({ content: '正在等待测试中断' }); held.add(res); res.on('close', () => held.delete(res)); return;
     }
-    if (last?.role !== 'tool' && /网站|保存|任务|越权工具/.test(text ?? '')) {
+    if (taskTools) {
+      const toolCount = body.messages.slice(body.messages.lastIndexOf(user!)).filter(message => message.role === 'tool').length;
+      const isPlanner = body.tools?.some(tool => tool.function.name === 'submit_plan');
+      const sequence = isPlanner ? [
+        ['submit_plan', { steps: [
+          { id: 'research', name: '调研', instruction: '撰写调研成果', dependsOn: [] },
+          { id: 'analyze', name: '分析', instruction: '撰写分析成果', dependsOn: [] },
+          { id: 'combine', name: '汇总', instruction: '汇总上游成果', dependsOn: ['research', 'analyze'] },
+        ] }],
+      ] : [
+        ...(text.includes('fixture:shell') ? [['bash', { command: 'echo $$ > shell.pid; sleep 60' }]] : []),
+        ...(text.includes('fixture:input') ? [['request_input', { question: '文件要使用什么颜色？' }]] : []),
+        ['write', { path: 'result.txt', content: 'Pi SDK verified result\n' }],
+        ['report_progress', { message: '已写入文件，准备提交成果。' }],
+        ['submit_result', { summary: '已通过 Pi SDK 写入成果文件。', artifacts: ['result.txt'] }],
+      ];
+      const next = sequence[toolCount];
+      if (next) {
+        chunk({ tool_calls: [{ index: 0, id: 'task_' + requests.length, type: 'function', function: { name: next[0], arguments: JSON.stringify(next[1]) } }] }); chunk({}, 'tool_calls');
+      } else { chunk({ content: '本步骤已提交成果。' }); chunk({}, 'stop'); }
+    } else if (last?.role !== 'tool' && /网站|保存|任务|越权工具/.test(text ?? '')) {
       const name = text?.includes('越权工具') ? 'bash' : text?.includes('任务') && !text.includes('保存') && !text.includes('网站') ? 'list_tasks' : 'save_request';
       const args = name === 'save_request' ? { text: text.split('\n\nOrbit 附件')[0] } : name === 'bash' ? { command: 'touch forbidden' } : {};
       const calls = text.includes('重复调用') ? [0, 1] : [0];

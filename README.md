@@ -11,6 +11,7 @@
 | [Repository Map · 源码地图](docs/REPOSITORY_MAP.md) | 每个模块和代码文件负责什么，主要调用链是什么，修改某项功能从哪里开始。 |
 | [架构与开发进度](docs/ARCHITECTURE.md) | 模块边界、状态归属、Pi SDK 接入方式、当前实现与下一步。 |
 | [模型配置与 Provider 接入](docs/MODEL_PROVIDERS.md) | PR1 支持的模型来源、配置优先级、凭据边界和供 PR2 使用的接口。 |
+| [任务执行](docs/TASK_EXECUTION.md) | Task / Step / Run、固定 DAG、Pi / 本地 CLI、问题审批、成果验收与重启恢复。 |
 | [Room 与共享历史](docs/ROOM_HISTORY.md) | Room / session 边界、文件存储、历史工具、上下文同步和两 PR 拆分。 |
 | [产品需求](docs/PRODUCT.md) | 产品定位、职责边界、目标交互、团队编排与验收场景，包含尚未实现的规划。 |
 | [业务链路 HTML · 历史快照](docs/orbit-business-flow.html) | 基于 `main@d3ee5e1` 的 Pi 接入前业务链路，可离线打开；当前实现以源码地图和架构文档为准。 |
@@ -40,12 +41,12 @@ npm start
 - Electron + React 桌面主入口、任务、文件和语音设置页面。
 - Pi Coding Agent SDK 1.3.0 驱动持续文字对话，支持流式回复、停止和重启恢复。
 - 模型配置后端：多套 API 配置、本地 Codex 登录复用、连接测试和空闲时切换。模型设置界面留到 PR2。
-- Orbit 业务层定义交互职责及 `list_tasks`、`save_request`、`read_history`、`search_history` 工具；普通聊天不创建任务。
+- 常驻 Agent 通过业务工具派发、查询、取消、重试和验收任务，保留保存需求与两个历史工具；普通聊天不创建任务。
 - 需求和附件本地保存、任务查看与待派发任务取消、重启恢复。
 - 附件通过系统文件选择器导入副本，支持 TXT、Markdown、PDF、图片、DOCX 和 CSV；每个最多 25 MB，每次需求最多 8 个。当前只接收和打开文件，不解析内容。
-- Qwen 实时语音对话、本地关键词唤醒，与文字共用 Room 上下文及四个工具。主入口统一展示文字与语音记录，支持历史翻页；文字回复期间暂停麦克风，结束后恢复语音。
+- Qwen 实时语音对话、本地关键词唤醒，与文字共用 Room 上下文及业务工具。主入口统一展示文字与语音记录，支持历史翻页；文字回复期间暂停麦克风，结束后恢复语音。
 
-**当前没有自动团队创建和任务执行能力**。交互 Agent 通过业务工具保存待派发需求，任务卡显示真实业务状态；“仅保存需求”保留直接保存入口。团队编排和执行将在 SDK 上层的业务层继续实现。
+任务执行后端支持单 Agent 直接执行，或先由 Planner 提交固定 DAG，再由宿主并行 / 串行调度多个步骤。系统统一选用 Pi SDK、Codex CLI 或 Claude Code CLI，每步有工作目录、独立会话和成果记录，支持取消、重试、用户问题 / 原生审批、待验收和重启续跑。最小执行 UI 由后续 PR 接入；当前可通过常驻 Agent 和 `window.orbit.execution` 使用后端。“仅保存需求”仍不会执行。
 
 任务、系统回执和附件元信息使用 SQLite，默认位于 Electron 的 Orbit 用户数据目录（macOS 通常为 `~/Library/Application Support/Orbit`），附件保存在同目录。共享历史按 session 保存在 `rooms/main/history/`，Pi 原生记录保存在 `rooms/main/runtime/pi/sessions/`。旧 `agent/sessions/` 首次启动时复制迁移，原文件保留。可通过 `ORBIT_DATA_DIR` 指定隔离目录。关闭窗口后保留应用；通过应用菜单或 `⌘Q` 退出会停止回复并关闭 Agent 进程。
 
@@ -55,7 +56,7 @@ npm start
 
 模型配置层支持 OpenAI、Anthropic、OpenRouter、自定义 Chat Completions 服务和本地 Codex ChatGPT 登录。可保存多套配置，显式激活其中一套；切换保留当前 Pi 会话及任务。PR1 提供 `window.orbit.models` 接口，模型设置页面将在 PR2 实现，接口示例见 [模型配置文档](docs/MODEL_PROVIDERS.md)。
 
-API key 由主进程使用 Electron `safeStorage` 加密，随配置写入 `<userData>/models.json`，界面读取时只有 `hasApiKey`。本地 Codex 来源每次调用只读 `CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）中的有效 access token；不复制 refresh token，不代替 Codex 登录、刷新或回写文件。首版不支持系统凭据库中的 Codex 登录，也未接入 Claude Code。
+API key 由主进程使用 Electron `safeStorage` 加密，随配置写入 `<userData>/models.json`，界面读取时只有 `hasApiKey`。本地 Codex 来源每次调用只读 `CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）中的有效 access token；不复制 refresh token，不代替 Codex 登录、刷新或回写文件。Pi 凭据层首版不支持系统凭据库中的 Codex 登录。任务也可选本机 Codex / Claude Code CLI，由 CLI 自己管理登录和原生历史，见 [任务执行文档](docs/TASK_EXECUTION.md)。
 
 尚未保存过模型配置时，可继续复制 `.env.example` 为 `.env`（已有文件时追加文字配置，不覆盖语音配置），选择以下一种方式，然后重启应用：
 
@@ -69,7 +70,7 @@ API key 由主进程使用 Electron `safeStorage` 加密，随配置写入 `<use
 
 未配置模型时仍可查看历史、管理任务和附件，并使用“仅保存需求”。文字模型配置与 Qwen 实时语音配置独立，不会把语音 WebSocket 地址当作文字接口。
 
-交互 Agent 开放查询任务、保存需求和两个只读历史工具，不加载用户目录或项目中的 Pi 扩展、技能、MCP、规则文件，也不开放终端和文件修改。附件只传递元信息；每轮最多创建一项待派发需求。业务任务以 SQLite 为准，Room 文件保存两个通道的可见历史和回执。最近上下文自动同步，更早内容通过历史工具读取；Pi 默认上下文上限 256k，受实际模型容量约束。主动 session 轮换策略留到后续讨论，详见 [Room 文档](docs/ROOM_HISTORY.md)。
+交互 Agent 开放任务派发和管理、保存需求及两个只读历史工具，不加载用户目录或项目中的 Pi 扩展、技能、MCP、规则文件，也不开放终端和文件修改。附件只传递元信息；每轮最多创建一项新任务。业务任务以 SQLite 为准，Room 文件保存两个通道的可见历史和回执。最近上下文自动同步，更早内容通过历史工具读取；Pi 默认上下文上限 256k，受实际模型容量约束。主动 session 轮换策略留到后续讨论，详见 [Room 文档](docs/ROOM_HISTORY.md)。
 
 SDK 资料：[官方 SDK](https://pi.dev/docs/latest/sdk) · [官方定制示例](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/examples/sdk/12-full-control.ts)。
 
@@ -83,6 +84,8 @@ npm run test:desktop
 桌面测试需要图形会话，使用临时数据目录和本机 HTTP 模型桩，运行真实 Pi SDK 与独立进程，覆盖聊天、业务工具、任务取消、会话恢复、停止回复、语音设置，以及模型配置 IPC、系统密钥加密、模型切换、重启和 Codex 只读凭据。Room UI 测试另外覆盖历史翻页位置、回执去重、流式更新保留旧页、麦克风暂停 / 恢复及旧音频回调隔离。不调用真实云端模型，不读取用户实际 Codex 凭据。截图输出到已忽略的 `artifacts/`。
 
 显式运行 `node scripts/codex-live-smoke.mjs` 可用本机 Codex 登录做真实端到端验证（需先构建）。它使用隔离的 Orbit 数据目录，验证连接、流式回复、重启续聊和任务查询工具，会消耗少量订阅额度。默认 `gpt-6.1-sol`，可通过 `ORBIT_CODEX_SMOKE_MODEL` 指定账号可用模型；不会修改 Codex 登录文件。详见 [模型配置文档](docs/MODEL_PROVIDERS.md#验证)。
+
+任务执行的联网验收使用 `node scripts/task-live-smoke.mjs codex-cli`（也可选 `pi` / `claude-cli`）：通过真实 Electron 和运行时创建文件、提交成果、验收并核对重启不重放。需要本机已安装并登录的 CLI；Pi 模式使用只读 Codex provider。会产生真实模型用量，报告写入 `artifacts/`。
 
 首版使用 TypeScript 快速开发。采用职责清晰的模块化设计，按实际用例接入所需能力，再逐步优化和迭代。
 
@@ -98,7 +101,7 @@ npm start
 
 点击输入框旁的语音按钮开始连续对话；在设置里点“开启语音唤醒”，说“Hey Orbit”，等显示“正在聆听”后再说需求。待唤醒阶段仅本机识别；唤醒后上传音频至百炼。结束语音会断开连接并释放麦克风，再次唤醒需重新开启。应用隐藏后仍可监听，退出应用则停止。
 
-当前语音支持查询真实本机任务、保存待派发需求；普通聊天不自动创建任务。语音转写按 session 写入 Room 文件，保存的需求进入 SQLite。文字输入通过 Pi 处理，两种通道共享最近上下文和历史工具；Qwen 采用官方 `max_history_turns=20`。支持服务端 VAD 打断与播放队列清空，真人唤醒率、扬声器回声和弱网表现需继续实测。
+当前语音与文字共用任务派发、查询、管理和历史工具；普通聊天不自动创建任务。语音转写按 session 写入 Room 文件，保存的需求进入 SQLite。文字输入通过 Pi 处理，两种通道共享最近上下文和历史工具；Qwen 采用官方 `max_history_turns=20`。支持服务端 VAD 打断与播放队列清空，真人唤醒率、扬声器回声和弱网表现需继续实测。
 
 实现参考 Relay 的本地关键词检测后开启云端会话的流程，使用 sherpa-onnx 1.13.8 和中英 3M 关键词模型；下载脚本校验固定 SHA-256。原生依赖及模型不打入网页。唤醒词定义在 `assets/voice/keywords.txt`，可独立调优。
 

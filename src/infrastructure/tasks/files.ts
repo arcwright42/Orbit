@@ -6,7 +6,11 @@ import type { Task } from '../../contracts';
 import type { TaskArtifact, TaskPlan } from '../../domains/tasks/execution';
 
 export class TaskFiles {
-  constructor(readonly root: string, private materials: MaterialLibrary) { mkdirSync(root, { recursive: true, mode: 0o700 }); }
+  constructor(readonly root: string, private materials: MaterialLibrary) {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    // macOS /var -> /private/var must not turn a valid artifact into a ../ path.
+    this.root = realpathSync(root);
+  }
   taskDirectory(taskId: string): string { return this.child(this.root, taskId); }
   stepDirectory(taskId: string, stepId: string): string { return this.child(join(this.taskDirectory(taskId), 'steps'), stepId); }
   runDirectory(taskId: string, runId: string): string { return this.child(join(this.taskDirectory(taskId), 'runs'), runId); }

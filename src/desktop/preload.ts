@@ -1,8 +1,25 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Conversation, OrbitApi, VoiceEvent } from '../contracts';
 import type { ModelConfigurationState } from '../domains/models/model';
+import type { TaskEvent } from '../domains/tasks/execution';
 
 const api: OrbitApi = {
+  execution: {
+    configuration: () => ipcRenderer.invoke('execution:configuration'),
+    configure: settings => ipcRenderer.invoke('execution:configure', settings),
+    detail: (id, before) => ipcRenderer.invoke('execution:detail', id, before),
+    dispatch: (id, mode) => ipcRenderer.invoke('execution:dispatch', id, mode),
+    retry: id => ipcRenderer.invoke('execution:retry', id),
+    answer: (id, questionId, answer) => ipcRenderer.invoke('execution:answer', id, questionId, answer),
+    accept: id => ipcRenderer.invoke('execution:accept', id),
+    openArtifact: (id, path) => ipcRenderer.invoke('execution:open-artifact', id, path),
+    openDirectory: id => ipcRenderer.invoke('execution:open-directory', id),
+    onChanged: listener => {
+      const handler = (_event: unknown, event: TaskEvent) => listener(event);
+      ipcRenderer.on('execution:event', handler);
+      return () => ipcRenderer.removeListener('execution:event', handler);
+    },
+  },
   room: {
     read: page => ipcRenderer.invoke('room:read', page),
     onChanged: listener => {
