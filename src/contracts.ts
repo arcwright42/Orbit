@@ -9,7 +9,7 @@ export interface Attachment {
 
 export interface Message {
   id: string;
-  role: 'user' | 'system' | 'assistant';
+  role: 'user' | 'system' | 'assistant' | 'tool';
   text: string;
   taskId?: string;
   attachmentIds?: string[];
@@ -20,7 +20,8 @@ export interface Message {
   turnId?: string;
   seq?: number;
   channel?: 'text' | 'voice' | 'system';
-  status?: 'complete' | 'interrupted' | 'failed';
+  status?: 'running' | 'complete' | 'interrupted' | 'failed';
+  tool?: { name: string; input: string };
 }
 
 export interface Task {

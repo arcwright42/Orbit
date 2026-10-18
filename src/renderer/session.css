@@ -1,0 +1,80 @@
+/* The session is a flat transcript. Only text, rules and spacing distinguish events. */
+.home { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 36px; overflow-y: auto; }
+.home:not(.has-messages) { justify-content: center; padding-bottom: 90px; }
+.home.has-messages { overflow: hidden; }
+.messages { flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 16px 10px 24px; scrollbar-width: thin; }
+.message { padding: 22px 0; border-bottom: 1px solid #ededed; }
+.message:last-of-type { border-bottom-color: transparent; }
+.message-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 18px; color: #777; font-size: 11px; }
+.event-label { color: #494949; font-size: 11px; font-weight: 600; letter-spacing: .2px; }
+.message.user .event-label { color: #767676; }
+.event-meta { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; color: #969696; font-size: 10px; white-space: nowrap; }
+.event-meta time { font-variant-numeric: tabular-nums; }
+.message-channel, .message-status { display: inline-flex; align-items: center; gap: 4px; color: #8b8171; font-size: 10px; }
+.message-channel { color: #929292; }
+.message-text { margin: 10px 0 0; font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; color: #373737; }
+.message.user .message-text { color: #626262; }
+.message.streaming .message-status { color: #8b8b8b; }
+.message-status.failed { color: #a05a52; }
+.history-more { display: block; margin: 0 auto 8px; padding: 10px 0; border-bottom: 1px solid #dcdcdc; color: #858585; font-size: 11px; }
+.history-more:hover { color: #333; border-color: #777; }
+.history-more:disabled { opacity: .6; cursor: wait; }
+
+.message.tool { padding: 14px 0; }
+.session-tool summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 20px; cursor: pointer; list-style: none; color: #7b7b7b; }
+.session-tool summary::-webkit-details-marker { display: none; }
+.session-tool summary:hover .event-label { color: #111; }
+.session-tool summary:focus-visible { outline: 2px solid #777; outline-offset: 5px; }
+.session-tool summary code { min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: #707070; }
+.tool-chevron { order: 5; flex-shrink: 0; color: #999; transition: transform .12s; }
+.session-tool[open] .tool-chevron { transform: rotate(90deg); }
+.tool-state { display: inline-flex; gap: 5px; align-items: center; color: #8c8c8c; font-size: 10px; }
+.tool-state.failed { color: #a05a52; }
+.tool-state.interrupted { color: #8b8171; }
+.tool-details { margin: 14px 0 4px; padding: 1px 0 1px 14px; border-left: 1px solid #dedede; }
+.tool-details > div + div { margin-top: 16px; }
+.tool-details h3 { margin: 0 0 7px; font-size: 10px; font-weight: 500; color: #959595; }
+.tool-details pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #686868; font: 11px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.receipt-label { font-size: 10px; color: #999; }
+.message.tool > .message-text, .session-receipt p { margin: 9px 0 0; font-size: 12px; line-height: 1.8; color: #808080; white-space: pre-wrap; overflow-wrap: anywhere; }
+.session-task { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 0 0; font-size: 12px; text-align: left; color: #656565; }
+.session-task > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-task-status { margin-left: auto; font-size: 10px; color: #919191; white-space: nowrap; }
+.session-task svg { flex-shrink: 0; color: #999; }
+.session-task:hover > span:first-child { color: #222; text-decoration: underline; text-underline-offset: 3px; }
+
+.composer-area { width: 100%; max-width: 740px; margin: 0 auto 22px; flex-shrink: 0; padding-top: 12px; }
+.composer { border: 1px solid #dedede; background: #fff; padding: 15px 16px 12px; }
+.composer:focus-within { border-color: #aaa; }
+.home textarea { min-height: 58px; font-size: 14px; line-height: 1.75; }
+.composer-tools { display: flex; justify-content: space-between; align-items: center; margin-top: 9px; gap: 12px; }
+.composer-tools > div { display: flex; align-items: center; gap: 14px; }
+.home .icon-button, .home .file-chip { border-radius: 0; }
+.home .file-chip { background: transparent; font-size: 11px; padding: 6px 8px; margin-top: 10px; }
+.home .attachment-row .file-chip { margin-top: 0; }
+.attach-button { display: inline-flex; gap: 7px; align-items: center; padding: 5px 0; color: #969696; font-size: 11px; }
+.attach-button:hover { color: #333; }
+.send { display: grid; place-items: center; width: 30px; height: 30px; background: #303030; color: #fff; }
+.send:hover:not(:disabled) { background: #505050; }
+.send:disabled { background: #f3f3f3; color: #aaa; opacity: 1; }
+.composer-footer { display: flex; align-items: center; gap: 18px; font-size: 10px; color: #aaa; margin-top: 11px; }
+.composer-footer button { padding: 0; font-size: 10px; color: #929292; }
+.composer-footer button:hover { color: #333; }
+.composer-footer button:disabled { opacity: .45; }
+.composer-footer > span { margin-left: auto; }
+.conversation-notice { margin: 10px 0 0; color: #808080; font-size: 12px; line-height: 1.7; }
+
+.voice-panel { flex: 0 0 auto; align-self: center; width: calc(100% - 72px); max-width: 740px; margin-bottom: 18px; padding: 12px 0; border-top: 1px solid #dedede; }
+.voice-heading { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.voice-heading strong { font-weight: 500; }
+.voice-panel .secondary-button { border-radius: 0; background: transparent; font-size: 11px; padding: 6px 9px; }
+.voice-heading .secondary-button { margin-left: auto; }
+.voice-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 10px; font-size: 11px; color: #888; }
+.voice-help, .voice-panel > p { margin: 10px 0 0; color: #888; font-size: 11px; }
+@media (max-width: 700px) {
+  .home { padding: 0 18px; }
+  .messages { padding-inline: 0; }
+  .voice-panel { width: calc(100% - 36px); }
+  .session-tool summary { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .tool-chevron { transition: none; } }

@@ -77,3 +77,18 @@ test('torn JSONL records preserve readable messages and future writes start a re
     assert.deepEqual(piContextPolicy(8192), { contextWindow: 8192, reserveTokens: 2048, keepRecentTokens: 3072 });
   } finally { f.cleanup(); }
 });
+
+test('unfinished tool events become interrupted after restart without changing their sequence or replaying them', () => {
+  const f = fixture();
+  try {
+    f.add('user', '查询任务');
+    const running = f.history.append({ id: 'tool-call', role: 'tool', text: '', status: 'running',
+      tool: { name: 'list_tasks', input: '{}' }, turnId: 'user', createdAt: '2026-10-18T10:00:01.000Z' }, 'pi-session', 'text');
+    const restored = new FileRoomHistory(f.directory);
+    const interrupted = restored.all().at(-1)!;
+    assert.deepEqual(interrupted, { ...running, status: 'interrupted' });
+    assert.deepEqual(restored.context().messages.map(message => message.id), ['user']);
+    assert.deepEqual(new FileRoomHistory(f.directory).all(), restored.all());
+    assert.deepEqual(restored.warnings, []);
+  } finally { f.cleanup(); }
+});

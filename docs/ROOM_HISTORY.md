@@ -26,9 +26,9 @@
     <Pi 原生 session JSONL>
 ```
 
-`history/` 是共享可见历史，记录 `id / roomId / sessionId / turnId / seq / channel / role / text / status / createdAt`，按需要包含附件和任务引用。只保存文本、转写和业务回执，不保存录音。Qwen provider session ID 记录在 `room.json` 的 session 元信息中，本地 session ID 用于连接建立前的归档和轮次标识。
+`history/` 是共享可见历史，记录 `id / roomId / sessionId / turnId / seq / channel / role / text / status / createdAt`，按需要包含附件和任务引用。保存文本、转写、业务回执和常驻 Agent 的工具事件，不保存录音。Qwen provider session ID 记录在 `room.json` 的 session 元信息中，本地 session ID 用于连接建立前的归档和轮次标识。
 
-每条可见消息拥有稳定 ID 和顺序号。状态更新追加同 ID 的修订记录；UI 投影取最后一版，grep/read 保留原始修订，可看到中断前后的状态。收到的部分语音转写在停止时标为 interrupted；网络尚未送达的文本无法恢复。Pi 原生会话单独存放，历史工具不能检索其内部工具调用、思考或配置。
+每条可见消息拥有稳定 ID 和顺序号。状态更新追加同 ID 的修订记录；UI 投影取最后一版，grep/read 保留原始修订，可看到中断前后的状态。收到的部分语音转写在停止时标为 interrupted；网络尚未送达的文本无法恢复。Pi 原生会话单独存放，历史工具不能检索其内部协议、思考或配置。Room 在公共工具执行入口记录文字 / 语音的工具名称、参数及结果摘录，每项最多 16,000 字符并明确标注截断；`running → complete / failed` 更新同一条记录。重启时未完成的工具标为 `interrupted`，不会重新执行。升级前未记录的工具事件不补写。
 
 `room.json` 和内存索引可从 JSONL 重建。损坏的索引先备份为 `.corrupt`；损坏的 JSONL 保留原文件，恢复可读记录，后续写入新 segment。主进程单写者，JSONL 每次追加执行 fsync，manifest / 摘要通过临时文件原子替换。SQLite 仍是业务任务事实来源；文件历史与 SQLite 不做跨存储事务，重启会补录缺失回执。
 
@@ -36,7 +36,7 @@
 
 ## 上下文与切换
 
-最近上下文最多取 20 个用户轮次、32 KiB，超长消息提供标注过的摘录。Pi 在接受新输入前用隐藏 `custom_message` 导入自己原生会话之外的新记录，用同步水位避免重复注入。历史被明确标记为参考资料，不能重放工具操作。
+最近上下文只取用户和助手消息，最多 20 个用户轮次、32 KiB，超长消息提供标注过的摘录。工具结果继续由原生运行时提供，Room 不重复注入展示用的工具事件与系统回执。Pi 在接受新输入前用隐藏 `custom_message` 导入自己原生会话之外的新记录，用同步水位避免重复注入。历史被明确标记为参考资料，不能重放工具操作。
 
 Pi context window 使用 `min(262144, 模型声明容量)`，保留和压缩参数也按容量收缩。实际压缩由 Pi 处理，压缩摘要导出至所属 session 的 `.summary.md`；完整可见历史仍保留。Qwen 设置 `max_history_turns=20`，在 `session.updated` 后发送 `conversation.item.create` 注入最近历史，收到每个历史 item 的确认后才接受实时音频。
 
@@ -64,6 +64,10 @@ const unsubscribe = window.orbit.room.onChanged(state => { /* 按 id 合并，�
 ```
 
 `messages` 是最近一页共享历史；`nextCursor` 是下一页的 exclusive before，`activeChannel` 表示当前通道，`status / draft / error` 是 Pi 回复状态。不要再拼接 `workspace.messages`，它们已经归档到 Room。实时事件只含最近一页，UI 应保留已加载的旧页并按 ID 更新。`conversation()` / `onConversation()` 在 PR1 保留旧 Pi 投影，供旧 UI 兼容；输入、停止和语音 IPC 继续复用现有接口。
+
+## 会话事件展示
+
+`SessionTimeline` 将时间线收敛为 User、Assistant、Tool 三类。工具默认折叠，只显示名称、状态和时间，可用鼠标或键盘展开参数和结果。对应的任务回执与入口并入同轮工具事件；只有旧记录或“仅保存需求”产生的本地回执独立显示为 Tool / 本地记录。助手流式输出、语音标识、中断 / 失败状态、附件、任务入口以及历史翻页保持可用。会话区域采用直角输入框与细分隔线，无头像气泡或卡片阴影。
 
 ## 调研取舍
 

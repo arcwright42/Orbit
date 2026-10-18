@@ -37,7 +37,22 @@ try {
   assert.equal(await page.getByText('历史对话 001', { exact: true }).count(), 1, 'Live page must not replace loaded archive');
   assert.equal(await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).count(), 1, 'Receipt must not duplicate');
   await expect(page.getByRole('textbox', { name: '你的需求' })).toHaveValue('');
+  const tool = page.locator('.session-tool').first();
+  await expect(tool.locator('summary')).toContainText('save_request');
+  await expect(tool.locator('summary')).toContainText('已完成');
+  await expect(tool).not.toHaveAttribute('open');
+  assert.equal(await page.locator('[data-event-kind="user"]').count(), 81);
+  assert.ok(await page.locator('[data-event-kind="assistant"]').count() >= 80);
+  assert.equal(await page.locator('[data-event-kind="tool"]').count(), 1, 'Receipt belongs to its real tool event');
   await page.screenshot({ path: 'artifacts/orbit-room-timeline.png' });
+  await tool.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(tool).toHaveAttribute('open');
+  await expect(tool.locator('pre').first()).toContainText('保存一个网站需求');
+  await expect(tool.locator('pre').last()).toContainText('"executed": false');
+  await page.screenshot({ path: 'artifacts/orbit-room-tool-expanded.png' });
+  await page.keyboard.press('Enter');
+  await expect(tool).not.toHaveAttribute('open');
   // Controlled voice transport uses the actual preload subscription and AudioWorklet.
   await app.evaluate(({ ipcMain, BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -93,7 +108,7 @@ try {
   assert.equal(await page.getByText('音频传输失败，请重试。', { exact: true }).count(), 0);
   await page.getByRole('button', { name: '结束语音', exact: true }).last().click();
   assert.deepEqual(errors, []);
-  console.log('Room UI smoke passed: unified archive, paging/scroll anchor, receipt dedup, live-page merge, paused mic and audio gate, manual voice switch, stale audio errors, resource release.');
+  console.log('Room UI smoke passed: User/Assistant/Tool events, tool detail keyboard toggle, receipt grouping, unified archive, paging/scroll anchor, live-page merge, paused mic and audio gate, manual voice switch, stale audio errors, resource release.');
 } catch (error) {
   if (page) await page.screenshot({ path: 'artifacts/orbit-room-ui-failure.png' }).catch(() => {});
   throw error;

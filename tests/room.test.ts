@@ -83,6 +83,36 @@ test('room tools isolate generations, deduplicate the same voice turn and retain
     assert.equal(f.history.all().filter(message => message.role === 'system').length, 2);
     await f.send('save-text-request', '保存网站需求，重复调用');
     assert.equal(f.workspace.snapshot().tasks.length, 2);
+    const tools = f.history.all().filter(message => message.role === 'tool');
+    assert.ok(tools.some(message => message.channel === 'voice' && message.tool?.name === 'save_request'));
+    assert.ok(tools.some(message => message.channel === 'text' && message.tool?.name === 'save_request'));
+    assert.ok(tools.every(message => message.status === 'complete'));
+    assert.ok(tools.filter(message => message.tool?.name === 'save_request').every(message => message.taskId && message.text.includes('"executed": false')));
+    assert.ok(f.history.context().messages.every(message => message.role === 'user' || message.role === 'assistant'));
+    assert.deepEqual(new FileRoomHistory(f.directory).all(), f.history.all());
+  } finally { await f.cleanup(); }
+});
+
+test('tool events update one stable row on completion or failure and bound their previews', async () => {
+  const f = await fixture();
+  try {
+    await f.room.startVoice(); const setup = f.voice.starts[0];
+    const context = { roomId: 'main', sessionId: setup.sessionId, generation: setup.generation, turnId: 'tool-turn', requestId: 'tool-turn', attachmentIds: [], currentAttachmentIds: [] };
+    let finish!: (result: unknown) => void;
+    f.interaction.execute = () => new Promise(resolve => { finish = resolve; });
+    const run = f.room.execute('list_tasks', {}, context);
+    const pending = f.history.all().at(-1)!;
+    assert.equal(pending.role, 'tool'); assert.equal(pending.status, 'running');
+    finish({ result: 'x'.repeat(20000) }); await run;
+    const done = f.history.all().at(-1)!;
+    assert.equal(done.id, pending.id); assert.equal(done.seq, pending.seq);
+    assert.equal(done.createdAt, pending.createdAt); assert.equal(done.status, 'complete');
+    assert.ok(done.text.length < 16100); assert.match(done.text, /展示已截断/);
+    f.interaction.execute = () => { throw new Error('Synthetic tool failure'); };
+    await assert.rejects(f.room.execute('read_history', { file: 'missing.jsonl' }, context), /Synthetic tool failure/);
+    const failed = f.history.all().at(-1)!;
+    assert.equal(failed.status, 'failed'); assert.equal(failed.text, 'Synthetic tool failure');
+    assert.notEqual(failed.id, done.id);
   } finally { await f.cleanup(); }
 });
 

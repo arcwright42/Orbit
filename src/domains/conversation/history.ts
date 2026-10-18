@@ -8,7 +8,7 @@ export interface HistoryMessage extends Message {
   turnId: string;
   seq: number;
   channel: Channel;
-  status: 'complete' | 'interrupted' | 'failed';
+  status: 'running' | 'complete' | 'interrupted' | 'failed';
 }
 export interface HistoryPage { messages: HistoryMessage[]; nextCursor?: number }
 export interface HistoryContext { roomId: string; throughSeq: number; messages: HistoryMessage[] }
