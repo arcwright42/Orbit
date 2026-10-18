@@ -1,5 +1,4 @@
 import { loadEnvFile } from 'node:process';
-import { randomUUID } from 'node:crypto';
 import { RealtimeVoice } from '../domains/voice/realtime';
 import { WakeDetector } from '../domains/voice/wake';
 import type { Conversation, VoiceEvent } from '../contracts';
@@ -10,7 +9,9 @@ import { pathToFileURL } from 'node:url';
 import { openDatabase } from '../infrastructure/database';
 import { MaterialLibrary } from '../domains/materials/library';
 import { WorkspaceService } from '../application/workspace';
-import { InteractionService, INTERACTION_PROMPT, INTERACTION_TOOLS } from '../application/interaction';
+import { InteractionService, INTERACTION_PROMPT, INTERACTION_TOOLS, HISTORY_PROMPT } from '../application/interaction';
+import { RoomService } from '../application/room';
+import { FileRoomHistory } from '../infrastructure/history/store';
 import { PiAgentHost } from '../infrastructure/pi/host';
 import { ModelConfigurationService } from '../application/models';
 import { ModelConfigurationError } from '../domains/models/model';
@@ -34,8 +35,12 @@ app.whenReady().then(() => {
   const db = openDatabase(join(dataDir, 'orbit.sqlite'));
   const materials = new MaterialLibrary(db, join(dataDir, 'attachments'));
   const workspace = new WorkspaceService(db, materials);
-  const interaction = new InteractionService(workspace);
+  const history = new FileRoomHistory(dataDir);
+  history.migrate(join(dataDir, 'agent'), workspace.snapshot().messages);
+  const interaction = new InteractionService(workspace, history);
+  let room: RoomService;
   const emitConversation = (state: Conversation) => {
+    room?.acceptPi(state);
     if (window && !window.isDestroyed()) window.webContents.send('conversation:state', state);
   };
   let models: ModelConfigurationService;
@@ -47,8 +52,8 @@ app.whenReady().then(() => {
       onExit: listener => { child.on('exit', listener); },
       kill: () => { child.kill(); },
     };
-  }, { directory: join(dataDir, 'agent'), systemPrompt: INTERACTION_PROMPT, tools: INTERACTION_TOOLS },
-  (name, args, context) => interaction.execute(name, args, context), emitConversation,
+  }, { directory: history.runtimeDirectory, roomId: history.roomId, systemPrompt: INTERACTION_PROMPT + HISTORY_PROMPT, tools: INTERACTION_TOOLS },
+  (name, args, context) => room.execute(name, args, context), emitConversation,
   { current: () => models.current(), credential: id => models.credential(id) });
   models = new ModelConfigurationService(
     new FileModelRepository(join(dataDir, 'models.json')), protectedSecrets(safeStorage),
@@ -77,40 +82,47 @@ app.whenReady().then(() => {
   modelHandle('models:detect-codex', () => models.detectCodex());
   modelHandle('models:test', id => models.test(id));
   const emitVoice = (event: VoiceEvent) => { if (window && !window.isDestroyed()) window.webContents.send('voice:event', event); };
-  const voice = new RealtimeVoice(emitVoice, (name, args) => {
-    if (name === 'list_tasks') return workspace.snapshot().tasks.map(({ id, title, status }) => ({ id, title, status }));
-    if (name === 'save_request' && args && typeof args === 'object' && 'text' in args && typeof args.text === 'string') {
-      const requestId = randomUUID();
-      const snapshot = workspace.submit({ requestId, text: args.text, attachmentIds: [] });
-      return { task: snapshot.tasks.find(task => task.requestId === requestId), executed: false };
-    }
-    throw new Error('Unsupported tool');
-  });
+  const voice = new RealtimeVoice(event => room.acceptVoice(event), (name, args, context) => room.execute(name, args, context));
+  room = new RoomService(history, agent, voice, interaction, workspace, state => {
+    if (window && !window.isDestroyed()) window.webContents.send('room:state', state);
+  }, emitVoice);
   let wake: WakeDetector | undefined;
   let voiceGeneration = 0;
-  const stopVoice = () => { voiceGeneration++; wake = undefined; voice.stop(); };
+  let wakePaused = false;
+  const stopVoice = () => { voiceGeneration++; wake = undefined; room.stopVoice(); };
   handle('voice:start', async value => {
     if (typeof value !== 'boolean') throw new Error('Invalid voice mode');
     const generation = ++voiceGeneration;
-    wake = undefined; voice.stop(false);
+    wake = undefined; room.stopVoice(false);
     if (process.platform === 'darwin' && !await systemPreferences.askForMediaAccess('microphone')) throw new Error('请在系统设置中允许 Orbit 使用麦克风。');
     if (generation !== voiceGeneration) return;
-    if (value) { wake = new WakeDetector(resolve(__dirname, '../assets/voice')); emitVoice({ type: 'state', state: 'waiting' }); }
-    else voice.start();
+    if (value) {
+      await room.abort();
+      if (generation !== voiceGeneration) return;
+      wake = new WakeDetector(resolve(__dirname, '../assets/voice')); emitVoice({ type: 'state', state: 'waiting' });
+    } else await room.startVoice();
   });
   handle('voice:stop', stopVoice);
   handle('voice:audio', value => {
     if (!(value instanceof Uint8Array) || value.length > 8192 || value.length % 2) throw new Error('Invalid audio frame');
-    if (wake) { if (wake.accept(value)) { wake = undefined; window?.show(); voice.start(); } }
-    else voice.audio(value);
+    if (wake) {
+      if (!wakePaused && wake.accept(value)) { wake = undefined; window?.show(); return room.startVoice(); }
+    } else room.audio(value);
   });
   app.on('before-quit', stopVoice);
   handle('workspace:read', () => workspace.snapshot());
   handle('conversation:read', () => agent.read());
-  handle('conversation:send', input => { models.assertCanSend(); return agent.send(interaction.prepare(input)); });
-  handle('conversation:abort', () => agent.abort());
-  handle('workspace:submit', input => workspace.submit(input));
-  handle('task:cancel', id => workspace.cancelTask(id));
+  handle('room:read', page => room.read(page));
+  handle('conversation:send', async input => {
+    models.assertCanSend(); const prepared = interaction.prepare(input);
+    const waiting = wake;
+    if (waiting) { wakePaused = true; emitVoice({ type: 'state', state: 'paused' }); }
+    try { await room.send(prepared); }
+    finally { wakePaused = false; if (waiting && wake === waiting) emitVoice({ type: 'state', state: 'waiting' }); }
+  });
+  handle('conversation:abort', () => room.abort());
+  handle('workspace:submit', input => { const result = workspace.submit(input); room.syncWorkspace(); return result; });
+  handle('task:cancel', id => { const result = workspace.cancelTask(id); room.syncWorkspace(); return result; });
   handle('materials:pick', async () => {
     const result = await dialog.showOpenDialog(window!, {
       properties: ['openFile'], title: '添加资料 · 单个文件最多 25 MB',
@@ -158,7 +170,7 @@ app.whenReady().then(() => {
   app.on('before-quit', event => {
     if (shutdownComplete) return;
     event.preventDefault();
-    void agent.close().catch(() => {}).finally(() => {
+    void room.close().catch(() => {}).finally(() => {
       if (shutdownComplete) return;
       shutdownComplete = true; db.close(); app.quit();
     });

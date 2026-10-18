@@ -1,8 +1,8 @@
 # Orbit Repository Map
 
-更新日期：2026-10-17。
+更新日期：2026-10-18。
 
-本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK 与 PR1 模型配置后端；历史业务链路 HTML 的基线另见文档索引。
+本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置后端与 Room PR1 后端；历史业务链路 HTML 的基线另见文档索引。
 
 仓库目前只有一个 npm 包：根目录 [package.json](../package.json) 定义的 `orbit-desktop`。`src/` 下的目录是这个包内部的逻辑模块，尚未拆成独立发布的 workspace packages。
 
@@ -25,6 +25,7 @@ Orbit/
 │   │   └── voice/            Qwen 实时语音、本地唤醒检测
 │   └── infrastructure/
 │       ├── database.ts       SQLite 建表、版本检查、事务
+│       ├── history/          按 session 归档、迁移、文件检索与分页读取
 │       ├── models/           配置文件、系统密钥保护、Codex 只读凭据
 │       └── pi/               Pi SDK 适配、会话与子进程通信
 ├── public/                   浏览器侧静态资源，目前为音频采集 worklet
@@ -45,7 +46,7 @@ Orbit/
 
 | 文件 | 主要定义 | 职责与使用方 |
 | --- | --- | --- |
-| [contracts.ts](../src/contracts.ts) | `Attachment`、`Message`、`Task`、`SubmitRequest`、`Workspace`、`Conversation`、`OrbitApi`、`VoiceEvent` | 定义界面、预加载、主进程共同使用的可序列化数据。`Workspace` 是业务数据视图，`Conversation` 是文字对话视图；`OrbitApi` 是 `window.orbit` 的接口。新增跨进程字段或界面能力先核对这里。 |
+| [contracts.ts](../src/contracts.ts) | `Attachment`、`Message`、`Task`、`SubmitRequest`、`Workspace`、`Conversation`、`OrbitApi`、`VoiceEvent` | 定义界面、预加载、主进程共同使用的可序列化数据。`Workspace` 是业务数据视图，`Conversation` 用于旧 Pi 投影及新的 Room 分页视图；`OrbitApi` 是 `window.orbit` 的接口。新增跨进程字段或界面能力先核对这里。 |
 
 `Task.status` 当前只有 `pending` 和 `canceled`；`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
 
@@ -69,7 +70,7 @@ Orbit/
 | 文件 | 运行位置 | 具体负责什么 |
 | --- | --- | --- |
 | [main.ts](../src/desktop/main.ts) | Electron 主进程 | 应用装配入口：读取 `.env`、确定数据目录、打开数据库、创建资料 / 工作空间 / 交互 / 模型配置服务和 `PiAgentHost`；注入 `safeStorage`、配置仓储与 Codex 凭据，校验 IPC 来源；启动窗口与菜单，处理文件选择、麦克风权限、语音与唤醒；通过 `utilityProcess.fork` 启动 Pi worker，退出时关闭 Agent 和数据库。 |
-| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，包含 `models` 配置 API；方法映射为 IPC 请求，对话 / 模型配置 / 语音事件映射为订阅，并提供取消订阅函数。不返回密钥。 |
+| [preload.ts](../src/desktop/preload.ts) | 预加载隔离上下文 | 用 `contextBridge` 暴露有限的 `window.orbit` 接口，包含 `models` 配置 API 和 `room.read / room.onChanged`；方法映射为 IPC 请求，对话 / 模型配置 / 语音事件映射为订阅，并提供取消订阅函数。不返回密钥。 |
 | [agent-worker.ts](../src/desktop/agent-worker.ts) | 独立 Agent 子进程 | 接收会话、配置切换、模型目录和连接测试命令，调用 `PiSession` 或模型运行时，回传状态和响应。业务工具和凭据读取经内部 RPC 转给主进程；支持 Electron `parentPort`，也支持测试使用的 Node IPC。 |
 
 ### 2.4 业务用例：`src/application/`
@@ -78,8 +79,9 @@ Orbit/
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
-| [interaction.ts](../src/application/interaction.ts) | `INTERACTION_PROMPT`、`INTERACTION_TOOLS`、`InteractionService` | 定义常驻交互 Agent 的身份、职责和 `list_tasks / save_request` 工具参数。`prepare` 校验输入并解析附件元信息；`execute` 分派业务工具，限制可关联的附件，用会话 ID 和轮次请求 ID 生成稳定去重键，再调用 `WorkspaceService`。这里不导入 Pi SDK。 |
-| [workspace.ts](../src/application/workspace.ts) | `WorkspaceService` | `snapshot` 汇总任务、附件和业务消息；`submit` 支持手动 / 语音保存；`saveRequest` 在事务中校验附件、去重、创建待派发任务并写系统回执；`cancelTask` 调用任务取消规则。Agent 保存只写业务回执，直接保存还写用户输入消息。 |
+| [interaction.ts](../src/application/interaction.ts) | `INTERACTION_PROMPT`、`INTERACTION_TOOLS`、`InteractionService` | 定义常驻交互 Agent 的身份、职责和 `list_tasks / save_request / read_history / search_history` 工具参数。`prepare` 校验输入并解析附件元信息；`execute` 分派业务工具，限制可关联的附件，用 room ID 和轮次 ID 生成稳定去重键，再调用 `WorkspaceService`。这里不导入 Pi SDK。 |
+| [room.ts](../src/application/room.ts) | `RoomService` | 串行化文字 / 语音输入，维护 generation，归档可见消息和回执，向 Pi / Qwen 注入最近历史，验证工具归属，控制切换、暂停、恢复与退出；不加载 Pi SDK。 |
+| [workspace.ts](../src/application/workspace.ts) | `WorkspaceService` | `snapshot` 汇总任务、附件和业务消息；`submit` 支持手动保存；`saveRequest` 在事务中校验附件、去重、创建待派发任务并写系统回执；`cancelTask` 调用任务取消规则。Agent 保存只写业务回执，直接保存还写用户输入消息。 |
 | [models.ts](../src/application/models.ts) | `ModelConfigurationService` | 读取 / 保存 / 删除多套模型配置，激活和测试；控制环境兼容优先级、回复中的变更限制、运行时切换及保存失败回滚。对外生成无凭据视图，对 worker 按需解析凭据。通过内部端口使用存储和运行时，不导入 Electron / Pi。 |
 
 ### 2.5 对话契约与回执：`src/domains/conversation/`
@@ -87,6 +89,7 @@ Orbit/
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
 | [agent.ts](../src/domains/conversation/agent.ts) | `AgentInput`、`BusinessTool`、`ToolContext`、`ExecuteTool`、`AgentRuntime` | 定义 Orbit 自己的 Agent 接口、工具描述及执行上下文。`AgentRuntime` 提供读取、发送、中断和关闭方法；适配层实现这些接口，业务代码不需要持有 Pi 的对象。 |
+| [history.ts](../src/domains/conversation/history.ts) | `RoomHistory`、`HistoryContext`、`HISTORY_TOOLS`、`projectPiHistory` | 定义共享历史端口、工具 schema、上下文预算、Pi 可见消息投影；Pi 运行适配和旧数据迁移共用投影。 |
 | [intake.ts](../src/domains/conversation/intake.ts) | `intakeReceipt` | 根据已保存任务生成明确的系统回执及任务关联，说明需求仅保存在本机、尚未派发。由 `WorkspaceService` 调用，不发起模型请求。 |
 
 ### 2.6 任务：`src/domains/tasks/`
@@ -108,15 +111,16 @@ Orbit/
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
-| [realtime.ts](../src/domains/voice/realtime.ts) | `RealtimeVoice` | 建立 Qwen WebSocket 会话，设置语音提示词与两个工具，处理音频上传、转写、回复音频、VAD 打断和错误。会话就绪后才接收上传，仅在服务端完整完成响应后执行工具；具体业务操作由主进程注入回调。 |
+| [realtime.ts](../src/domains/voice/realtime.ts) | `RealtimeVoice` | 建立 Qwen WebSocket 会话，接收 Room 注入的提示词、四个工具和最近历史，等待历史 item 确认后上传音频；关联用户 item / response / tool call，等待异步工具结果，隔离旧 socket，归档已收到的中断转写。 |
 | [wake.ts](../src/domains/voice/wake.ts) | `WakeDetector` | 加载本地 sherpa-onnx 关键词模型，把 16 kHz PCM 转为识别输入，返回是否命中唤醒词。模型缺失时提示运行安装脚本；本文件不建立云端连接。 |
 
-语音的工具描述定义在 `realtime.ts`，工具实现回调在 `desktop/main.ts`；文字 Agent 的工具描述与分派在 `application/interaction.ts`。目前两条通道共用 `WorkspaceService`，各自维护模型会话。
+语音和文字共用 `application/interaction.ts` 的工具定义与分派，经 `RoomService` 校验轮次。两条通道保留各自模型运行会话，以稳定 room 串联可见历史。
 
 ### 2.9 数据与 Pi 适配：`src/infrastructure/`
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
+| [history/store.ts](../src/infrastructure/history/store.ts) | `FileRoomHistory` | 每 session JSONL、稳定消息 ID / seq、最近上下文、摘要、旧 Pi / 回执迁移、索引与损坏恢复；按文件名查找、调用包内 ripgrep 检索、按行 / 字节分页读取，拒绝越界路径。 |
 | [database.ts](../src/infrastructure/database.ts) | `openDatabase`、`transaction` | 使用 `node:sqlite` 打开数据库，检查 `user_version`，建立任务、消息和附件表，配置 WAL / 外键 / 等待超时；提供 `BEGIN IMMEDIATE` 事务及回滚。当前建表与版本逻辑都集中在本文件。 |
 | [models/store.ts](../src/infrastructure/models/store.ts) | `FileModelRepository`、`protectedSecrets` | 校验 / 原子读写版本化 `models.json`，保护已有损坏文件；包装主进程注入的 Electron `safeStorage` 加解密，拒绝无系统保护的明文降级。 |
 | [models/codex.ts](../src/infrastructure/models/codex.ts) | `LocalCodexCredentials` | 只读指定 `CODEX_HOME` 下的 `auth.json`，检查大小、ChatGPT 登录格式、account claim 与有效期。提供无 token 的检测状态，调用时返回 access token；不导入 refresh token、不登录 / 刷新 / 回写。 |
@@ -162,9 +166,9 @@ flowchart LR
     Host <-->|命令 / 状态 / 工具消息| Worker
 ```
 
-发送入口是 `App → window.orbit.sendMessage → conversation:send`。主进程先调用 `InteractionService.prepare`，再交给 `PiAgentHost.send` 和子进程中的 `PiSession.send`。
+发送入口是 `App → window.orbit.sendMessage → conversation:send`。主进程先调用 `InteractionService.prepare`，再由 `RoomService.send` 串行化通道并提供最近历史，交给 `PiAgentHost.send` 和子进程中的 `PiSession.send`。
 
-模型调用工具时，`PiSession → worker → host → InteractionService.execute → WorkspaceService`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。页面另外读取工作空间中的真实任务与系统回执。
+模型调用工具时，`PiSession → worker → host → RoomService.execute → InteractionService.execute → WorkspaceService / FileRoomHistory`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。旧页面另外读取工作空间中的真实任务与系统回执。PR2 使用 `room:state` / `room:read` 的统一投影。
 
 ### 3.2 直接保存、取消与附件
 
@@ -180,10 +184,10 @@ flowchart LR
 
 1. `useVoice` 获取麦克风，加载 [voice-capture.js](../public/voice-capture.js)，采集单声道 16 kHz PCM，按 640 个采样点分帧。
 2. 音频经 `orbit.voiceAudio → voice:audio` 到主进程；待唤醒时送给 `WakeDetector`，命中后启动 `RealtimeVoice`。直接开始语音时跳过唤醒阶段。
-3. `RealtimeVoice` 连接 Qwen，接收转写、音频和工具调用；业务工具由 `desktop/main.ts` 的回调查询或调用 `WorkspaceService.submit`。
+3. `RealtimeVoice` 连接 Qwen，接收转写、音频和工具调用；业务工具由 `RoomService` 校验轮次后调用统一的 `InteractionService`。
 4. 主进程通过 `voice:event` 返回事件，`useVoice` 展示转写、播放音频、响应打断并刷新任务数据。
 
-语音没有经过 `PiSession` 或 `InteractionService.execute`。文字与语音共享任务和附件库，语音保存入口当前仅传文字、不附带附件，转写保留在当前页面内存。
+语音协议不经过 `PiSession`，业务工具经过统一的 `InteractionService.execute`。文字和语音共享 Room 最近上下文、历史工具、任务与附件引用。转写写入文件；中断和重连不改变 room ID。
 
 ### 3.4 模型配置与凭据
 
@@ -201,9 +205,11 @@ worker 需要凭据时走 `credential → host → ModelConfigurationService.cre
 | 系统回执、直接保存入口的用户消息 | 同一 SQLite 的 `messages` 表 | `WorkspaceService`；与任务创建一起提交。 |
 | 附件元信息与内部路径 | 同一 SQLite 的 `attachments` 表 | `MaterialLibrary`。 |
 | 附件文件副本 | `<userData>/attachments/` | `MaterialLibrary` 导入，主进程按 ID 打开。 |
-| Pi 模型消息、工具结果、会话树和压缩记录 | `<userData>/agent/sessions/` 下的原生 JSONL | `PiSession` 使用 Pi `SessionManager` 管理。 |
+| Pi 模型消息、工具结果、会话树和压缩记录 | `<userData>/rooms/main/runtime/pi/sessions/` 下的原生 JSONL | `PiSession` 使用 Pi `SessionManager` 管理。 |
 | Orbit 文字轮次 ID、输入、附件关联和结束状态 | 同一 Pi 会话中的 `orbit.interaction-turn.v1` 自定义条目 | `PiSession`；重启时把未正常结束的轮次标为中断。 |
-| 当前流式草稿、页面选择、语音转写和播放队列 | 进程 / 页面内存 | `PiSession`、`PiAgentHost`、`App`、`useVoice` 各自持有对应状态。 |
+| Room 可见消息与每 session 摘要 | `<userData>/rooms/main/history/` | `FileRoomHistory`，经 `RoomService` 接收 Pi / Qwen 消息和 SQLite 回执。 |
+| Room 索引和 provider session 映射 | `<userData>/rooms/main/room.json` | `FileRoomHistory` 原子写入，损坏时从历史重建。 |
+| 当前流式草稿、页面选择、未完成转写和播放队列 | 进程 / 页面内存 | `PiSession`、`PiAgentHost`、`App`、`useVoice` 各自持有对应状态。 |
 | 模型配置、active ID、加密 API key | `<userData>/models.json` | `ModelConfigurationService` 编排，`FileModelRepository` 原子持久化，`safeStorage` 加解密。 |
 | 本地 Codex 登录 | `CODEX_HOME/auth.json`，默认 `~/.codex/auth.json` | Codex 拥有并更新；Orbit 主进程仅按需只读有效 access token，不复制 / 刷新 / 回写。 |
 | 旧文字模型环境配置、Qwen 语音凭据 | 本机环境变量 / `.env` | 主进程加载；旧文字配置只在没有 `models.json` 时生效。凭据不发送到界面。 |
@@ -246,6 +252,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
 | [scripts/model-smoke.mjs](../scripts/model-smoke.mjs) | `npm run test:desktop` 的第二阶段 | 通过真实 preload / IPC 验证模型配置增删改查、系统加密、连接测试、切换和重启、回复中互斥；临时 Codex 文件用于检测、过期拒绝与只读验证。不调用真实云端模型。 |
 | [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron UI / IPC 测试连接、流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
+| [scripts/room-live-smoke.mjs](../scripts/room-live-smoke.mjs) | `node scripts/room-live-smoke.mjs` | 显式联网：真实 Codex / Qwen 双向上下文、历史工具、语音暂停恢复、重启、凭据隔离；临时数据和 macOS 合成音频，不采集真实麦克风。 |
 | [scripts/voice-smoke.mjs](../scripts/voice-smoke.mjs) | `node scripts/voice-smoke.mjs` | 显式联网验证：使用模拟麦克风和本机语音配置，检查真实 Qwen 会话、停止与本地唤醒初始化；保存语音界面截图。需要先构建、安装唤醒模型并准备 `artifacts/`。 |
 | [scripts/voice-roundtrip.mjs](../scripts/voice-roundtrip.mjs) | `node scripts/voice-roundtrip.mjs <wake.wav> <query.wav>` | 显式联网验证：输入两份单声道 16 kHz WAV，按实时速率注入唤醒词和提问，等待语音回复，输出转写 / 状态事件及音频块数量。需要已构建桌面、唤醒模型和 Qwen 配置。 |
 
@@ -261,6 +268,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | `@earendil-works/pi-ai` | 当前固定为 1.3.0，适配层使用内存凭据 / 模型存储与工具 schema 类型；模型调用也依赖 Pi 体系中的能力。 |
 | `electron` | 桌面窗口、预加载、IPC、系统能力和 Agent utility process。 |
 | `react`、`react-dom`、`lucide-react` | 页面、React 挂载和图标。 |
+| `@vscode/ripgrep` | 随 npm 安装平台二进制，历史 content 模式检索；主进程构建保留为外部依赖，避免丢失二进制路径。 |
 | `ws` | `RealtimeVoice` 的 WebSocket 客户端。 |
 | `sherpa-onnx-node` | `WakeDetector` 的原生关键词检测和语音验证脚本中的 WAV 读取。 |
 | `vite`、`@vitejs/plugin-react`、`esbuild` | 分别构建 / 开发网页部分和 Electron / worker 部分。 |
@@ -287,7 +295,9 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [tests/agent-host.test.ts](../tests/agent-host.test.ts) | 通过真实 Node 子进程运行 worker，验证崩溃后恢复同一会话、不重放轮次、关闭时中断正在运行的回复。 |
 | [tests/models.test.ts](../tests/models.test.ts) | 多配置与密钥隔离、加密持久化、环境优先级、保存 / 切换失败回滚、回复中互斥、损坏文件保护、输入和目录验证、Codex 文件只读 / 轮换 / 过期。 |
 | [tests/model-runtime.test.ts](../tests/model-runtime.test.ts) | 真实 Pi SDK 的五种 provider 协议、请求鉴权、连接测试无会话、跨 provider 切换保留历史、Codex 轮换与过期不接受输入、错误脱敏及无 OAuth 刷新；订阅退役过滤不影响 API 模型或旧配置修复。 |
-| [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证会话就绪前不发音频、只执行完成响应中的工具、停止后的旧会话事件不会影响新会话。 |
+| [tests/history.test.ts](../tests/history.test.ts) | 文件查找、grep、行 / 字节分页、损坏恢复、消息去重、摘要、room 隔离与路径拒绝、上下文预算。 |
+| [tests/room.test.ts](../tests/room.test.ts) | 真实 Pi SDK 与语音端口的上下文桥接、暂停 / 中断 / 恢复、保存去重和旧轮次拒绝、迁移保留原 session、摘要归档。 |
+| [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证历史确认后才发音频、四个工具与默认 20 轮、异步工具只执行一次、取消 / 切换不续写新会话、中断转写归档。 |
 | [tests/fixtures/model-server.ts](../tests/fixtures/model-server.ts) | 本机 HTTP Chat Completions 流式模型桩；提供问候、任务工具、重复 / 非法工具、慢回复及失败场景，同时记录请求供断言使用。被 Pi 测试与桌面 smoke 复用。 |
 | [tests/fixtures/provider-server.ts](../tests/fixtures/provider-server.ts) | 本机 Responses、Codex Responses、Anthropic Messages 和 Chat Completions SSE 协议桩，接收 Codex zstd 请求并记录测试请求。 |
 | [tests/fixtures/codex-auth.ts](../tests/fixtures/codex-auth.ts) | 生成包含合成 account claim 和到期时间的测试 JWT；仅用于临时文件和本机模拟服务。 |
@@ -298,7 +308,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 
 | 想改什么 | 优先查看 | 一起核对 |
 | --- | --- | --- |
-| 常驻 Agent 的身份、澄清或保存策略 | `application/interaction.ts` | `tests/agent.test.ts`；语音有独立提示词，需检查 `domains/voice/realtime.ts`。 |
+| 常驻 Agent 的身份、澄清或保存策略 | `application/interaction.ts` | `tests/agent.test.ts`；语音和文字共用提示词与工具，需检查 `application/room.ts`。 |
 | 新增一个文字业务工具 | `application/interaction.ts` 的工具 schema 与 `execute` | 在对应应用服务 / 领域实现动作；Pi 适配层按工具定义注册，只有运行能力变化时才需要调整适配。补充模型桩和相关测试。 |
 | 模型配置 / provider / 凭据 | `domains/models`、`application/models.ts`、`infrastructure/models`、`infrastructure/pi/models.ts` | `MODEL_PROVIDERS.md`、preload / main / worker、模型测试；配置 UI 为 PR2。 |
 | 流式状态、上下文恢复、模型切换 | `infrastructure/pi/session.ts` | `tests/agent.test.ts`、`tests/model-runtime.test.ts`。 |
@@ -311,6 +321,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | 语音采集、播放、打断 | `renderer/useVoice.ts`、`public/voice-capture.js` | `domains/voice/realtime.ts`、主进程音频路由和语音测试。 |
 | 唤醒词、模型或识别参数 | `assets/voice/keywords.txt`、`domains/voice/wake.ts` | `scripts/setup-voice.mjs`、模型来源说明及本地语音验证。 |
 | 数据库表或数据升级 | `infrastructure/database.ts` | 对应 repository / service，以及重启和兼容性验证；当前没有单独的 migrations 目录。 |
+| Room / session / 历史工具 | `application/room.ts`、`domains/conversation/history.ts`、`infrastructure/history/store.ts` | `ROOM_HISTORY.md`、Pi / Qwen 适配、Room / history / voice 测试；主动轮换策略待讨论。 |
 | 团队编排、执行会话、成果验收 | 先看 `PRODUCT.md` 与 `ARCHITECTURE.md` 的下一步 | 这些业务模块尚未实现。应新增对应业务用例、领域状态与执行会话，再通过交互工具接入。 |
 
 ## 8. 文档索引与维护
@@ -321,6 +332,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [PRODUCT.md](PRODUCT.md) | 产品定位、角色、目标体验与验收方向；包含尚未实现的规划。 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 当前模块边界、运行链路、状态归属、Pi 接入取舍与下一步。 |
 | [MODEL_PROVIDERS.md](MODEL_PROVIDERS.md) | PR1 provider 范围、配置优先级与凭据边界、PR2 IPC 契约、使用示例和验证。 |
+| [ROOM_HISTORY.md](ROOM_HISTORY.md) | Room 后端和 UI 两 PR 边界、标识、存储、上下文、工具、迁移、参考资料与验证。 |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | 本页：目录和逐文件职责、调用路径、维护入口。 |
 | [orbit-business-flow.html](orbit-business-flow.html) | Pi 接入前的业务链路可视化快照，基于 `main` 的 `d3ee5e1`（2026-10-11）。其中的文字入口描述不代表当前 Pi 实现；当前状态以源码与架构文档为准。 |
 

@@ -15,6 +15,12 @@ export interface Message {
   attachmentIds?: string[];
   requestId?: string;
   createdAt: string;
+  roomId?: string;
+  sessionId?: string;
+  turnId?: string;
+  seq?: number;
+  channel?: 'text' | 'voice' | 'system';
+  status?: 'complete' | 'interrupted' | 'failed';
 }
 
 export interface Task {
@@ -41,6 +47,10 @@ export interface Workspace {
 }
 
 export interface Conversation {
+  roomId?: string;
+  activeChannel?: 'text' | 'voice';
+  nextCursor?: number;
+  summary?: { text: string; throughEntryId: string };
   sessionId?: string;
   model?: string;
   configured: boolean;
@@ -52,6 +62,10 @@ export interface Conversation {
 
 export interface OrbitApi {
   models: ModelsApi;
+  room: {
+    read(page?: { before?: number; limit?: number }): Promise<Conversation>;
+    onChanged(listener: (state: Conversation) => void): () => void;
+  };
   conversation(): Promise<Conversation>;
   sendMessage(input: SubmitRequest): Promise<void>;
   stopReply(): Promise<void>;
@@ -68,8 +82,8 @@ export interface OrbitApi {
 }
 
 export type VoiceEvent =
-  | { type: 'state'; state: 'off' | 'waiting' | 'connecting' | 'listening' }
-  | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
+  | { type: 'state'; state: 'off' | 'waiting' | 'connecting' | 'listening' | 'paused' }
+  | { type: 'transcript'; role: 'user' | 'assistant'; text: string; id?: string; turnId?: string; status?: 'complete' | 'interrupted' | 'failed' }
   | { type: 'audio'; data: string }
   | { type: 'interrupt' }
   | { type: 'error'; text: string };

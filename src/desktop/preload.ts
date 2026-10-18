@@ -3,6 +3,14 @@ import type { Conversation, OrbitApi, VoiceEvent } from '../contracts';
 import type { ModelConfigurationState } from '../domains/models/model';
 
 const api: OrbitApi = {
+  room: {
+    read: page => ipcRenderer.invoke('room:read', page),
+    onChanged: listener => {
+      const handler = (_event: unknown, state: Conversation) => listener(state);
+      ipcRenderer.on('room:state', handler);
+      return () => ipcRenderer.removeListener('room:state', handler);
+    },
+  },
   models: {
     read: () => ipcRenderer.invoke('models:read'),
     catalog: providerId => ipcRenderer.invoke('models:catalog', providerId),

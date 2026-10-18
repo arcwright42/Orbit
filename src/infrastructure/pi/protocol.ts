@@ -3,6 +3,7 @@ import type { AgentInput, BusinessTool, ToolContext } from '../../domains/conver
 import type { ModelConnectionResult, ModelCredential, ModelOption, ModelProfile } from '../../domains/models/model';
 
 export interface AgentSetup {
+  roomId?: string;
   directory: string;
   systemPrompt: string;
   tools: BusinessTool[];

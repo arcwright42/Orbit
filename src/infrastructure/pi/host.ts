@@ -96,10 +96,12 @@ export class PiAgentHost implements AgentRuntime, ModelRuntimePort {
       return;
     }
     try {
-      if (!this.active || this.active.requestId !== message.context.requestId || this.state.status !== 'running') {
+      if (!this.active || this.active.requestId !== message.context.requestId || this.state.status !== 'running' ||
+          this.active.roomId !== message.context.roomId || this.active.generation !== message.context.generation) {
         throw new Error('本轮对话已结束，工具调用已取消。');
       }
-      const result = await this.execute(message.name, message.args, message.context);
+      const result = await this.execute(message.name, message.args, { ...message.context,
+        roomId: this.active.roomId, turnId: this.active.turnId ?? this.active.requestId, generation: this.active.generation });
       if (this.child === child) child?.send({ type: 'tool_result', id: message.id, result });
     } catch (error) {
       if (this.child === child) {
