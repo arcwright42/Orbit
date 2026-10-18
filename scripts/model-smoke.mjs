@@ -11,7 +11,8 @@ const codexHome = join(directory, 'codex');
 await mkdir(codexHome);
 const model = await createModelServer();
 const other = await createModelServer();
-const env = { ...process.env, ...model.env, CODEX_HOME: codexHome, ORBIT_DATA_DIR: directory };
+const env = { ...process.env, ...model.env, CODEX_HOME: codexHome, ORBIT_DATA_DIR: directory,
+  ORBIT_CODEX_PATH: join(directory, 'missing-codex'), ORBIT_CLAUDE_PATH: join(directory, 'missing-claude') };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ORBIT_DEV_URL;
 let app;

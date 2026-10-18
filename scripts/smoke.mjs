@@ -8,7 +8,8 @@ import { createModelServer } from '../tests/fixtures/model-server.ts';
 const directory = await mkdtemp(join(tmpdir(), 'orbit-desktop-smoke-'));
 const model = await createModelServer();
 await mkdir('artifacts', { recursive: true });
-const env = { ...process.env, ...model.env, ORBIT_DATA_DIR: directory };
+const env = { ...process.env, ...model.env, ORBIT_DATA_DIR: directory,
+  ORBIT_CODEX_PATH: join(directory, 'missing-codex'), ORBIT_CLAUDE_PATH: join(directory, 'missing-claude') };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ORBIT_DEV_URL;
 let app;
@@ -58,6 +59,7 @@ try {
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('heading', { name: '语音交互' }).waitFor();
   await page.getByRole('button', { name: '开启语音唤醒' }).waitFor();
+  await expect(page.getByRole('region', { name: '任务执行', exact: true }).getByText('不可用', { exact: true })).toHaveCount(2);
   await page.screenshot({ path: 'artifacts/orbit-settings.png' });
   await app.close(); app = undefined;
   app = await electron.launch({ args: ['.'], env: { ...env, ORBIT_AGENT_BASE_URL: '', ORBIT_AGENT_PROVIDER: '', ORBIT_AGENT_MODEL: '', ORBIT_AGENT_API_KEY: '' } });
