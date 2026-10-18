@@ -57,11 +57,14 @@ Orbit/
 | 文件 | 入口 / 对象 | 具体负责什么 |
 | --- | --- | --- |
 | [main.tsx](../src/renderer/main.tsx) | React 根节点 | 加载全局样式，将 `App` 挂载到 HTML 的 `root`，启用 `StrictMode`。 |
-| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
+| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 读取唯一的 Room 时间线，交给 `SessionTimeline` 展示事件和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
 | [TaskBoard.tsx](../src/renderer/TaskBoard.tsx) | `TaskBoard` | 任务看板 / 列表切换、搜索、状态筛选、任务卡片及选中回调。数据由 `App` 传入，不直接查询数据库。 |
+| [SessionTimeline.tsx](../src/renderer/SessionTimeline.tsx) | `SessionTimeline` | User / Assistant / Tool 三类事件；用户输入靠右、助手正文靠左、工具与旧回执收起为状态行；语音来源、附件和任务链接。工具调用与同轮业务回执合并展示，兼容旧回执。 |
+| [MessageContent.tsx](../src/renderer/MessageContent.tsx) | `MessageContent` | 助手回复的 Markdown / GFM 排版，段落、列表、代码、表格；原始 HTML 不执行，图片和链接按文本展示。 |
+| [session.css](../src/renderer/session.css) | 会话 CSS | 简约消息、工具详情、圆角输入框和语音条；隐藏会话滚动条，保留滚动能力；与业务设置、任务页面样式分离。 |
 | [useRoom.ts](../src/renderer/useRoom.ts) | `useRoom` | 订阅 Room 最近页，按消息 ID 合并并按 seq 排序，保留已加载旧页，防止初始 read 覆盖实时事件，管理旧页 cursor 与读取互斥。 |
 | [useVoice.ts](../src/renderer/useVoice.ts) | `useVoice` | 获取麦克风、启动 AudioWorklet、经 IPC 发送音频帧；播放服务端 24 kHz PCM 音频，管理播放队列、打断和资源释放；文字回复时关闭麦克风 track 与帧上传，语音就绪后恢复，手动切回语音复用麦克风；generation 隔离迟到的采集 / IPC 错误。转写由 Room 时间线展示。 |
-| [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、对话、输入框、任务看板、文件、设置、语音面板、弹窗及响应式样式。 |
+| [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、任务看板、文件、设置、弹窗及响应式样式；会话样式在 `session.css`。 |
 | [global.d.ts](../src/renderer/global.d.ts) | `Window.orbit` | 把 `OrbitApi` 声明到浏览器全局类型，只提供 TypeScript 类型，不创建运行时接口。 |
 
 `TaskBoard` 展示了“进行中 / 待验收 / 已完成”等预留列；后端目前只能产生待派发和已取消任务。增加列本身不会增加执行能力。

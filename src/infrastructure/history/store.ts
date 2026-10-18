@@ -66,9 +66,10 @@ export class FileRoomHistory implements HistoryPort {
         try {
           const record = JSON.parse(line) as HistoryMessage;
           if (record.roomId !== roomId || !safeId(record.sessionId) || !Number.isSafeInteger(record.seq) || record.seq < 1 ||
-              typeof record.id !== 'string' || typeof record.text !== 'string' || !['user', 'assistant', 'system'].includes(record.role) ||
+              typeof record.id !== 'string' || typeof record.text !== 'string' || !['user', 'assistant', 'system', 'tool'].includes(record.role) ||
               typeof record.turnId !== 'string' || typeof record.createdAt !== 'string' || !Number.isFinite(Date.parse(record.createdAt)) ||
-              !['text', 'voice', 'system'].includes(record.channel) || !['complete', 'interrupted', 'failed'].includes(record.status)) throw new Error();
+              !['text', 'voice', 'system'].includes(record.channel) || !['running', 'complete', 'interrupted', 'failed'].includes(record.status) ||
+              (record.tool !== undefined && (typeof record.tool?.name !== 'string' || typeof record.tool?.input !== 'string'))) throw new Error();
           this.records.set(record.id, record); this.seq = Math.max(this.seq, record.seq);
           if (!this.manifest.sessions.some(session => session.id === record.sessionId)) {
             this.manifest.sessions.push({ id: record.sessionId, channel: record.channel, file, startedAt: record.createdAt });
@@ -81,6 +82,10 @@ export class FileRoomHistory implements HistoryPort {
       }
     }
     this.saveManifest();
+    // A previous host can no longer finish these calls. Keep their identity and ordering.
+    for (const record of this.records.values()) {
+      if (record.role === 'tool' && record.status === 'running') this.append({ ...record, status: 'interrupted' }, record.sessionId, record.channel);
+    }
   }
 
   private saveManifest() { atomic(join(this.directory, 'room.json'), JSON.stringify(this.manifest, null, 2) + '\n'); }
@@ -147,7 +152,8 @@ export class FileRoomHistory implements HistoryPort {
     return { messages, ...(all.length > count ? { nextCursor: messages[0].seq } : {}) };
   }
   context(): HistoryContext {
-    const all = this.all().filter(message => message.role !== 'system');
+    // Native Pi/Qwen already receive tool results. The shared context contains speech/text only.
+    const all = this.all().filter(message => message.role === 'user' || message.role === 'assistant');
     const messages: HistoryMessage[] = []; const turns = new Set<string>(); let bytes = 0;
     for (const message of all.reverse()) {
       const size = Buffer.byteLength(JSON.stringify(message));

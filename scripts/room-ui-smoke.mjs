@@ -17,12 +17,13 @@ try {
   const messages = Array.from({ length: 160 }, (_, i) => ({
     id: `seed-${i + 1}`, roomId: 'main', sessionId: 'seed-voice', turnId: `turn-${Math.floor(i / 2)}`, seq: i + 1,
     role: i % 2 === 0 ? 'user' : 'assistant', channel: 'voice', status: i === 159 ? 'interrupted' : 'complete',
-    text: `历史对话 ${String(i + 1).padStart(3, '0')}`, createdAt: new Date(Date.UTC(2026, 9, 18, 8, i)).toISOString(),
+    text: i === 158 ? '这个个人网站先做一个简单版本，发布前需要准备什么？' : i === 159 ? '可以先确定三件事：\n\n1. **内容**：个人介绍、代表作品和联系方式。\n2. **页面**：先做首页，手机和桌面都能正常浏览。\n3. **发布**：确认域名和部署位置，再检查访问效果。' : `历史对话 ${String(i + 1).padStart(3, '0')}`, createdAt: new Date(Date.UTC(2026, 9, 18, 8, i)).toISOString(),
   }));
   await writeFile(join(history, '2026-10-18T08-00-00.000Z--qwen--seed-voice.jsonl'), messages.map(message => JSON.stringify(message)).join('\n') + '\n');
   app = await electron.launch({ args: ['.', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'], env });
   page = await app.firstWindow(); page.on('pageerror', error => errors.push(error.message));
-  await page.getByText('历史对话 160', { exact: true }).waitFor();
+  await page.locator('[data-message-id="seed-160"]').waitFor();
+  await expect(page.locator('[data-message-id="seed-160"] ol li')).toHaveCount(3);
   assert.equal(await page.locator('[data-message-id]').count(), 100);
   assert.equal(await page.getByText('已中断', { exact: true }).count(), 1);
   const older = page.getByRole('button', { name: '加载更早的对话' }); await older.scrollIntoViewIfNeeded();
@@ -31,13 +32,46 @@ try {
   assert.equal(await page.locator('[data-message-id]').count(), 160);
   const afterTop = await page.locator('[data-message-id="seed-61"]').evaluate(element => element.getBoundingClientRect().top);
   assert.ok(Math.abs(beforeTop - afterTop) < 5, `Reading position moved: ${beforeTop} -> ${afterTop}`);
-  await page.getByRole('textbox', { name: '你的需求' }).fill('保存一个网站需求');
-  await page.getByRole('button', { name: '发送消息', exact: true }).click();
-  await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).waitFor();
+  const input = page.getByRole('textbox', { name: '你的需求' });
+  await input.fill('保存一个网站需求');
+  await input.press('Shift+Enter');
+  await expect(input).toHaveValue('保存一个网站需求\n');
+  await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, keyCode: 229 });
+  await expect(input).toBeEnabled();
+  assert.equal(await page.locator('[data-message-id]').count(), 160, 'IME confirmation must not send a message');
+  await input.fill('保存一个网站需求');
+  await input.press('Enter');
+  await page.locator('.session-tool summary').first().waitFor();
   assert.equal(await page.getByText('历史对话 001', { exact: true }).count(), 1, 'Live page must not replace loaded archive');
-  assert.equal(await page.getByText('需求已保存在本机，尚未派发。', { exact: false }).count(), 1, 'Receipt must not duplicate');
   await expect(page.getByRole('textbox', { name: '你的需求' })).toHaveValue('');
+  const tool = page.locator('.session-tool').first();
+  await expect(tool.locator('summary')).toContainText('保存需求');
+  await expect(tool.locator('summary')).toContainText('已完成');
+  await expect(page.getByText('需求已保存在本机，尚未派发。', { exact: false })).toHaveCount(1);
+  await expect(tool).not.toHaveAttribute('open');
+  await expect(page.getByText('需求已保存在本机，尚未派发。', { exact: false })).not.toBeVisible();
+  assert.equal(await page.locator('[data-event-kind="user"]').count(), 81);
+  assert.ok(await page.locator('[data-event-kind="assistant"]').count() >= 80);
+  assert.equal(await page.locator('[data-event-kind="tool"]').count(), 1, 'Receipt belongs to its real tool event');
   await page.screenshot({ path: 'artifacts/orbit-room-timeline.png' });
+  await tool.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(tool).toHaveAttribute('open');
+  await expect(tool.locator('pre').first()).toContainText('保存一个网站需求');
+  await expect(tool.locator('pre').last()).toContainText('"executed": false');
+  await tool.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'artifacts/orbit-room-tool-expanded.png' });
+  await page.keyboard.press('Enter');
+  await expect(tool).not.toHaveAttribute('open');
+  const bounds = await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0]; const bounds = win.getBounds();
+    win.setSize(900, 650); return bounds;
+  });
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(900);
+  await page.locator('.messages').evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => page.locator('.messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'artifacts/orbit-room-narrow.png' });
+  await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), bounds);
   // Controlled voice transport uses the actual preload subscription and AudioWorklet.
   await app.evaluate(({ ipcMain, BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -93,7 +127,7 @@ try {
   assert.equal(await page.getByText('音频传输失败，请重试。', { exact: true }).count(), 0);
   await page.getByRole('button', { name: '结束语音', exact: true }).last().click();
   assert.deepEqual(errors, []);
-  console.log('Room UI smoke passed: unified archive, paging/scroll anchor, receipt dedup, live-page merge, paused mic and audio gate, manual voice switch, stale audio errors, resource release.');
+  console.log('Room UI smoke passed: User/Assistant/Tool events, tool detail keyboard toggle, receipt grouping, unified archive, paging/scroll anchor, live-page merge, paused mic and audio gate, manual voice switch, stale audio errors, resource release.');
 } catch (error) {
   if (page) await page.screenshot({ path: 'artifacts/orbit-room-ui-failure.png' }).catch(() => {});
   throw error;

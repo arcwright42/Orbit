@@ -1,10 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import type { Conversation, VoiceEvent } from '../contracts';
+import type { Conversation, Message, VoiceEvent } from '../contracts';
 import type { AgentInput, AgentRuntime, ToolContext } from '../domains/conversation/agent';
 import type { VoiceRuntime } from '../domains/voice/realtime';
 import type { RoomHistory } from '../domains/conversation/history';
 import { HISTORY_PROMPT, INTERACTION_PROMPT, INTERACTION_TOOLS, InteractionService } from './interaction';
 import type { WorkspaceService } from './workspace';
+
+// Keep tool previews bounded; native runtimes retain their own full protocol records.
+function toolPreview(value: unknown) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
+  return text.length > 16000 ? text.slice(0, 16000) + '\n…（展示已截断）' : text;
+}
 
 /** One durable room, with serialized Pi / Qwen turns and replaceable provider sessions. */
 export class RoomService {
@@ -55,10 +61,24 @@ export class RoomService {
   }
   async execute(name: string, args: unknown, context: ToolContext) {
     if (context.roomId !== this.history.roomId || context.generation !== this.generation || this.closed) throw new Error('本轮对话已结束，工具调用已取消。');
-    const result = await this.interaction.execute(name, args, { ...context,
-      attachmentIds: [...new Set([...this.history.attachments(), ...context.currentAttachmentIds])] });
-    this.syncWorkspace(context);
-    return result;
+    const channel = context.sessionId === this.voiceSession ? 'voice' : 'text';
+    const event: Message = { id: `tool-${randomUUID()}`, role: 'tool', text: '', status: 'running',
+      turnId: context.turnId ?? context.requestId, createdAt: new Date().toISOString(), tool: { name, input: toolPreview(args) } };
+    const update = (patch: Partial<Message>) => {
+      this.history.append({ ...event, ...patch }, context.sessionId, channel); this.emit();
+    };
+    update({});
+    try {
+      const result = await this.interaction.execute(name, args, { ...context,
+        attachmentIds: [...new Set([...this.history.attachments(), ...context.currentAttachmentIds])] });
+      const task = result && typeof result === 'object' && 'task' in result ? result.task : undefined;
+      const taskId = task && typeof task === 'object' && 'id' in task && typeof task.id === 'string' ? task.id : undefined;
+      update({ text: toolPreview(result), status: 'complete', ...(taskId ? { taskId } : {}) });
+      return result;
+    } catch (error) {
+      update({ text: error instanceof Error ? error.message : '工具执行失败。', status: 'failed' });
+      throw error;
+    } finally { this.syncWorkspace(context); }
   }
   async send(input: AgentInput) {
     if (this.closed || this.textRun || this.switching) throw new Error('请等待当前回复或切换结束，或先停止回复。');
