@@ -40,6 +40,8 @@ Orbit 使用 TypeScript、Electron、React、Vite 和 Pi Coding Agent SDK 1.3.0�
 
 ## 状态归属与恢复
 
+任务执行基础层新增 Task → Step → Run 和固定依赖调度，状态与事件共用 `orbit.sqlite` 事务。当前 PR 尚未将运行时接到桌面入口，真实执行能力在后续接入 PR 启用；详见 [任务执行](TASK_EXECUTION.md)。
+
 - **Pi 原生 JSONL**：`rooms/main/runtime/pi/sessions/` 保存模型消息、工具结果、会话树和压缩记录。
 - **Room 可见历史**：`rooms/main/history/` 按 session 保存文字、语音转写、系统回执和 Pi 压缩摘要，生成统一时间线与历史工具结果。
 - **Pi 自定义条目**：保存 Orbit 请求标识、输入及附件关联、轮次状态。相同标识的不同内容会拒绝；已接收轮次不会在网络重试或重启后自动重放。

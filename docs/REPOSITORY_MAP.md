@@ -48,7 +48,7 @@ Orbit/
 | --- | --- | --- |
 | [contracts.ts](../src/contracts.ts) | `Attachment`、`Message`、`Task`、`SubmitRequest`、`Workspace`、`Conversation`、`OrbitApi`、`VoiceEvent` | 定义界面、预加载、主进程共同使用的可序列化数据。`Workspace` 是业务数据视图，`Conversation` 用于旧 Pi 投影及新的 Room 分页视图；`OrbitApi` 是 `window.orbit` 的接口。新增跨进程字段或界面能力先核对这里。 |
 
-`Task.status` 当前只有 `pending` 和 `canceled`；`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
+`Task.status` 已定义任务执行生命周期；当前桌面入口仍只保存待派发任务，后续运行时 PR 接通执行。`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
 
 ### 2.2 页面模块：`src/renderer/`
 
@@ -94,6 +94,19 @@ Orbit/
 | [intake.ts](../src/domains/conversation/intake.ts) | `intakeReceipt` | 根据已保存任务生成明确的系统回执及任务关联，说明需求仅保存在本机、尚未派发。由 `WorkspaceService` 调用，不发起模型请求。 |
 
 ### 2.6 任务：`src/domains/tasks/`
+
+任务执行基础层见 [任务执行](TASK_EXECUTION.md)。新增文件职责：
+
+| 文件 | 职责 |
+| --- | --- |
+| [tasks/execution.ts](../src/domains/tasks/execution.ts) | Task/Step/Run、问题、成果、事件、运行时设置和跨 IPC 数据契约。 |
+| [tasks/plan.ts](../src/domains/tasks/plan.ts) | 固定 DAG 校验，包括路径标识、重复节点、未知依赖和环。 |
+| [tasks/execution-repository.ts](../src/domains/tasks/execution-repository.ts) | SQLite 执行记录、工具回执去重、事务和事件分页。 |
+| [tasks/runtime.ts](../src/domains/tasks/runtime.ts) | 启动、停止、进程核对、运行时事件及工具调用端口，不依赖具体 SDK。 |
+| [application/task-execution.ts](../src/application/task-execution.ts) | 唯一任务执行状态写入入口；派发、依赖调度、工具、问题、结果核验、取消和重启恢复。 |
+| [application/task-tools.ts](../src/application/task-tools.ts) | Planner/Worker 可见的业务工具定义。 |
+| [infrastructure/tasks/files.ts](../src/infrastructure/tasks/files.ts) | 任务目录、输入复制、规划投影、运行日志及成果路径/哈希核验。 |
+| [tests/task-execution.test.ts](../tests/task-execution.test.ts) | 真实 SQLite 和文件上的编排行为、异常与恢复回归。 |
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
