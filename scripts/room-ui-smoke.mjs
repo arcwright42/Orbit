@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { createModelServer } from '../tests/fixtures/model-server.ts';
 const directory = await mkdtemp(join(tmpdir(), 'orbit-room-ui-'));
 const model = await createModelServer();
-const env = { ...process.env, ...model.env, ORBIT_DATA_DIR: directory };
+const env = { ...process.env, ...model.env, ORBIT_DATA_DIR: directory,
+  ORBIT_CODEX_PATH: join(directory, 'missing-codex'), ORBIT_CLAUDE_PATH: join(directory, 'missing-claude') };
 delete env.ELECTRON_RUN_AS_NODE; delete env.ORBIT_DEV_URL;
 let app, page;
 const errors = [];

@@ -2,7 +2,7 @@
 
 更新日期：2026-10-18。
 
-本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置、Room / 统一入口 UI 及任务执行后端；历史业务链路 HTML 的基线另见文档索引。
+本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置、Room / 统一入口 UI 及任务执行后端 / UI；历史业务链路 HTML 的基线另见文档索引。
 
 仓库目前只有一个 npm 包：根目录 [package.json](../package.json) 定义的 `orbit-desktop`。`src/` 下的目录是这个包内部的逻辑模块，尚未拆成独立发布的 workspace packages。
 
@@ -50,7 +50,7 @@ Orbit/
 | --- | --- | --- |
 | [contracts.ts](../src/contracts.ts) | `Attachment`、`Message`、`Task`、`SubmitRequest`、`Workspace`、`Conversation`、`OrbitApi`、`VoiceEvent` | 定义界面、预加载、主进程共同使用的可序列化数据。`Workspace` 是业务数据视图，`Conversation` 用于旧 Pi 投影及新的 Room 分页视图；`OrbitApi` 是 `window.orbit` 的接口。新增跨进程字段或界面能力先核对这里。 |
 
-`Task.status` 已定义任务执行生命周期；桌面入口与常驻 Agent 已接通执行，任务 UI 在后续 PR 补齐。`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
+`Task.status` 已定义任务执行生命周期；桌面入口、常驻 Agent 和任务 UI 已接通执行。`Conversation.status` 的 `running` 表示模型正在回复，与任务执行状态无关。
 
 ### 2.2 页面模块：`src/renderer/`
 
@@ -59,14 +59,17 @@ Orbit/
 | 文件 | 入口 / 对象 | 具体负责什么 |
 | --- | --- | --- |
 | [main.tsx](../src/renderer/main.tsx) | React 根节点 | 加载全局样式，将 `App` 挂载到 HTML 的 `root`，启用 `StrictMode`。 |
-| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
+| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情挂载、设置页和语音面板。订阅任务事件并读取工作空间，使用请求序号防止旧快照覆盖新状态。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
 | [TaskBoard.tsx](../src/renderer/TaskBoard.tsx) | `TaskBoard` | 任务看板 / 列表切换、搜索、状态筛选、任务卡片及选中回调。数据由 `App` 传入，不直接查询数据库。 |
+| [TaskDetail.tsx](../src/renderer/TaskDetail.tsx) | `TaskDetail` | 任务详情、固定步骤依赖、成果文件、问题与明确审批、执行 / 取消 / 重试 / 验收、事件分页与实时合并；封闭弹窗焦点，关闭后恢复焦点。 |
+| [ExecutionSettings.tsx](../src/renderer/ExecutionSettings.tsx) | `ExecutionSettings` | 检测本机运行时，选择全局 Pi / Codex / Claude，配置最大并发，显示可用性和保存结果。 |
+| [task-presentation.ts](../src/renderer/task-presentation.ts) | 状态映射 | 任务 / 步骤 / 运行时中文名称、看板分组、时间和 IPC 错误格式化；展示层不推测业务完成。 |
 | [useRoom.ts](../src/renderer/useRoom.ts) | `useRoom` | 订阅 Room 最近页，按消息 ID 合并并按 seq 排序，保留已加载旧页，防止初始 read 覆盖实时事件，管理旧页 cursor 与读取互斥。 |
 | [useVoice.ts](../src/renderer/useVoice.ts) | `useVoice` | 获取麦克风、启动 AudioWorklet、经 IPC 发送音频帧；播放服务端 24 kHz PCM 音频，管理播放队列、打断和资源释放；文字回复时关闭麦克风 track 与帧上传，语音就绪后恢复，手动切回语音复用麦克风；generation 隔离迟到的采集 / IPC 错误。转写由 Room 时间线展示。 |
 | [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、对话、输入框、任务看板、文件、设置、语音面板、弹窗及响应式样式。 |
 | [global.d.ts](../src/renderer/global.d.ts) | `Window.orbit` | 把 `OrbitApi` 声明到浏览器全局类型，只提供 TypeScript 类型，不创建运行时接口。 |
 
-`TaskBoard` 的执行状态呈现将在任务 UI PR 中对齐后端；业务状态以 TaskExecutionService 和 SQLite 为准。
+`TaskBoard` 按待派发、进行中、需要处理、待验收、已完成、已取消分组，并展示每项任务的具体状态；业务状态以 TaskExecutionService 和 SQLite 为准。
 
 ### 2.3 桌面与进程入口：`src/desktop/`
 
@@ -127,7 +130,7 @@ Orbit/
 
 | 文件 | 主要定义 | 具体负责什么 |
 | --- | --- | --- |
-| [realtime.ts](../src/domains/voice/realtime.ts) | `RealtimeVoice` | 建立 Qwen WebSocket 会话，接收 Room 注入的提示词、四个工具和最近历史，等待历史 item 确认后上传音频；关联用户 item / response / tool call，等待异步工具结果，隔离旧 socket，归档已收到的中断转写。 |
+| [realtime.ts](../src/domains/voice/realtime.ts) | `RealtimeVoice` | 建立 Qwen WebSocket 会话，接收 Room 注入的提示词、业务工具和最近历史，等待历史 item 确认后上传音频；关联用户 item / response / tool call，等待异步工具结果，隔离旧 socket，归档已收到的中断转写。 |
 | [wake.ts](../src/domains/voice/wake.ts) | `WakeDetector` | 加载本地 sherpa-onnx 关键词模型，把 16 kHz PCM 转为识别输入，返回是否命中唤醒词。模型缺失时提示运行安装脚本；本文件不建立云端连接。 |
 
 语音和文字共用 `application/interaction.ts` 的工具定义与分派，经 `RoomService` 校验轮次。两条通道保留各自模型运行会话，以稳定 room 串联可见历史。
@@ -286,6 +289,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | --- | --- | --- |
 | [scripts/dev.mjs](../scripts/dev.mjs) | `npm run dev` | 先构建 Electron 代码，再启动 Vite 和 Electron，注入 `ORBIT_DEV_URL`，在退出时回收进程。页面支持热更新；Electron 及其依赖代码修改后要重启。 |
 | [scripts/task-live-smoke.mjs](../scripts/task-live-smoke.mjs) | `node scripts/task-live-smoke.mjs <runtime>` | 显式联网：真实 Electron / Pi 或原生 CLI，核验任务进展、文件、成果、验收与重启不重放。使用临时数据，报告输出到 artifacts。 |
+| [scripts/task-ui-smoke.mjs](../scripts/task-ui-smoke.mjs) | `npm run test:desktop` 的第四阶段 | 真实 Electron / preload / 任务服务 / worker，覆盖 Pi DAG、设置、成果打开和验收、输入 / 审批 / 拒绝 / 重试、取消与主回复独立、分页 / 焦点、隐藏窗口与重启恢复；使用本地模型 / CLI 桩。 |
 | [scripts/build-electron.mjs](../scripts/build-electron.mjs) | `npm run build` 的 Electron 阶段 | 用 esbuild 生成 `main.cjs`、`preload.cjs` 和独立 ESM `agent-worker.mjs`、`task-worker.mjs`、`task-mcp.mjs`。worker 的 npm 包保持外部依赖，保留 Pi 包自身的运行资源。 |
 | [scripts/setup-voice.mjs](../scripts/setup-voice.mjs) | `npm run setup:voice` | 下载固定版本的关键词模型压缩包，校验 SHA-256，解压指定文件到 `assets/voice/`，清理临时目录。 |
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
@@ -339,7 +343,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [tests/model-runtime.test.ts](../tests/model-runtime.test.ts) | 真实 Pi SDK 的五种 provider 协议、请求鉴权、连接测试无会话、跨 provider 切换保留历史、Codex 轮换与过期不接受输入、错误脱敏及无 OAuth 刷新；订阅退役过滤不影响 API 模型或旧配置修复。 |
 | [tests/history.test.ts](../tests/history.test.ts) | 文件查找、grep、行 / 字节分页、损坏恢复、消息去重、摘要、room 隔离与路径拒绝、上下文预算。 |
 | [tests/room.test.ts](../tests/room.test.ts) | 真实 Pi SDK 与语音端口的上下文桥接、暂停 / 中断 / 恢复、保存去重和旧轮次拒绝、迁移保留原 session、摘要归档。 |
-| [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证历史确认后才发音频、四个工具与默认 20 轮、异步工具只执行一次、取消 / 切换不续写新会话、中断转写归档。 |
+| [tests/voice.test.ts](../tests/voice.test.ts) | 用模拟 WebSocket 验证历史确认后才发音频、业务工具与默认 20 轮、异步工具只执行一次、取消 / 切换不续写新会话、中断转写归档。 |
 | [tests/fixtures/model-server.ts](../tests/fixtures/model-server.ts) | 本机 HTTP Chat Completions 流式模型桩；提供问候、任务工具、重复 / 非法工具、慢回复及失败场景，同时记录请求供断言使用。被 Pi 测试与桌面 smoke 复用。 |
 | [tests/fixtures/provider-server.ts](../tests/fixtures/provider-server.ts) | 本机 Responses、Codex Responses、Anthropic Messages 和 Chat Completions SSE 协议桩，接收 Codex zstd 请求并记录测试请求。 |
 | [tests/fixtures/codex-auth.ts](../tests/fixtures/codex-auth.ts) | 生成包含合成 account claim 和到期时间的测试 JWT；仅用于临时文件和本机模拟服务。 |
