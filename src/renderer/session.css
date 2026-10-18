@@ -2,7 +2,9 @@
 .home { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 36px; overflow-y: auto; }
 .home:not(.has-messages) { justify-content: center; padding-bottom: 90px; }
 .home.has-messages { overflow: hidden; }
-.messages { flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: 700px; margin: 0 auto; padding: 24px 10px 16px; scrollbar-width: thin; }
+.messages { flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: 700px; margin: 0 auto; padding: 24px 10px 16px; }
+.home, .messages, .home textarea, .tool-details pre { scrollbar-width: none; }
+.home::-webkit-scrollbar, .messages::-webkit-scrollbar, .home textarea::-webkit-scrollbar, .tool-details pre::-webkit-scrollbar { display: none; }
 .message { margin: 0 0 24px; }
 .message.user { width: fit-content; max-width: 85%; margin: 16px 0 24px auto; }
 .message.user .message-body { background: #f0f0f0; padding: 10px 15px; }
@@ -67,7 +69,7 @@
 .session-task:hover { color: #444; }
 
 .composer-area { width: 100%; max-width: 680px; margin: 0 auto 22px; flex-shrink: 0; padding-top: 12px; }
-.composer { border: 1px solid #dedede; background: #fff; padding: 12px 14px 10px; }
+.composer { border: 1px solid #dedede; border-radius: 18px; background: #fff; padding: 12px 14px 10px; }
 .composer:focus-within { border-color: #aaa; }
 .home textarea { min-height: 42px; font-size: 14px; line-height: 1.75; }
 .composer-tools { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 12px; }

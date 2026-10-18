@@ -32,8 +32,15 @@ try {
   assert.equal(await page.locator('[data-message-id]').count(), 160);
   const afterTop = await page.locator('[data-message-id="seed-61"]').evaluate(element => element.getBoundingClientRect().top);
   assert.ok(Math.abs(beforeTop - afterTop) < 5, `Reading position moved: ${beforeTop} -> ${afterTop}`);
-  await page.getByRole('textbox', { name: '你的需求' }).fill('保存一个网站需求');
-  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  const input = page.getByRole('textbox', { name: '你的需求' });
+  await input.fill('保存一个网站需求');
+  await input.press('Shift+Enter');
+  await expect(input).toHaveValue('保存一个网站需求\n');
+  await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, keyCode: 229 });
+  await expect(input).toBeEnabled();
+  assert.equal(await page.locator('[data-message-id]').count(), 160, 'IME confirmation must not send a message');
+  await input.fill('保存一个网站需求');
+  await input.press('Enter');
   await page.locator('.session-tool summary').first().waitFor();
   assert.equal(await page.getByText('历史对话 001', { exact: true }).count(), 1, 'Live page must not replace loaded archive');
   await expect(page.getByRole('textbox', { name: '你的需求' })).toHaveValue('');

@@ -68,6 +68,9 @@ try {
   await page.getByRole('textbox', { name: '你的需求' }).waitFor();
   assert.equal((await page.evaluate(() => window.orbit.conversation())).configured, false);
   await page.getByRole('textbox', { name: '你的需求' }).fill('仅离线保存的需求');
+  await page.getByRole('textbox', { name: '你的需求' }).press('Enter');
+  await expect(page.getByRole('textbox', { name: '你的需求' })).toHaveValue('仅离线保存的需求');
+  await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: '仅保存需求', exact: true }).click();
   await expect.poll(async () => (await page.evaluate(() => window.orbit.workspace())).tasks.length).toBe(2);
   assert.ok(await page.getByRole('button', { name: '发送消息', exact: true }).isDisabled());
