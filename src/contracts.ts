@@ -1,5 +1,6 @@
 // Serializable application DTOs. Renderer never imports persistence or runtime code.
 import type { ModelsApi } from './domains/models/model';
+import type { TaskExecution, TaskStatus } from './domains/tasks/execution';
 export interface Attachment {
   id: string;
   name: string;
@@ -28,7 +29,8 @@ export interface Task {
   requestId: string;
   title: string;
   brief: string;
-  status: 'pending' | 'canceled';
+  status: TaskStatus;
+  execution?: TaskExecution;
   attachmentIds: string[];
   createdAt: string;
   updatedAt: string;
