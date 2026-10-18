@@ -69,11 +69,17 @@ if (args.includes('app-server')) {
         return JSON.parse(result.contentItems[0].text);
       };
       const permission = async () => (await request('item/commandExecution/requestApproval', { threadId, turnId, itemId: 'command', command: 'fixture harmless command', cwd: process.cwd() })).decision === 'accept';
-      void work(message.params.input[0].text, toolNames, call, resumed, permission).then(() => {
+      void (async () => {
+        const prompt = message.params.input[0].text;
+        if (prompt.includes('fixture:native-input')) {
+          const answer = await request('item/tool/requestUserInput', { threadId, turnId, itemId: 'native-question', questions: [{ id: 'color', header: '颜色', question: '文件要使用什么颜色？', options: [] }] });
+          assert.deepEqual(answer, { answers: { color: { answers: ['blue'] } } });
+        }
+        await work(prompt, toolNames, call, resumed, permission);
         // Complete before turn/start ACK to exercise notification/response races.
         send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
         send({ id: message.id, result: { turn: { id: turnId } } });
-      }).catch(error => { process.stderr.write(String(error)); process.exit(1); });
+      })().catch(error => { process.stderr.write(String(error)); process.exit(1); });
     }
     if (message.method === 'turn/interrupt') send({ id: message.id, result: {} });
   });

@@ -45,7 +45,7 @@ export async function runCodex(executable: string, input: TaskRuntimeInput, call
       const answer = await callbacks.tool('permission_request', { question: 'Codex 请求本轮额外权限：\n' + JSON.stringify(params.permissions) }, 'permission-' + params.itemId) as { answer: string };
       return { permissions: answer.answer === 'approve' ? params.permissions : {}, scope: 'turn' };
     }
-    if (method === 'tool/requestUserInput') {
+    if (method === 'item/tool/requestUserInput') {
       const answers: Record<string, { answers: string[] }> = {};
       for (const question of params.questions ?? []) {
         const result = await callbacks.tool('request_input', { question: question.question + (question.options?.length ? '\n' + JSON.stringify(question.options) : '') }, 'question-' + params.itemId + '-' + question.id) as { answer: string };

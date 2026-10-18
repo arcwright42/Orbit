@@ -113,6 +113,17 @@ test('Claude success result followed by nonzero process exit cannot complete the
   } finally { await service.close(); f.cleanup(); }
 });
 
+test('Codex native item/tool/requestUserInput round-trips the user answer', { timeout: 30_000 }, async () => {
+  const f = fixture('codex-cli'); const service = f.service();
+  try {
+    await service.start(); const task = f.task('fixture:native-input'); await service.dispatch(task.id, 'direct');
+    await until(() => service.detail(task.id).task.status === 'waiting');
+    service.answer(task.id, service.detail(task.id).runs[0].questions[0].id, 'blue');
+    await until(() => ['review', 'failed'].includes(service.detail(task.id).task.status));
+    assert.equal(service.detail(task.id).task.status, 'review');
+  } finally { await service.close(); f.cleanup(); }
+});
+
 test('Pi SDK uses real filesystem tools and independent native sessions for a planned DAG', { timeout: 60_000 }, async () => {
   const provider = await createModelServer(); const f = fixture('pi', environmentProfile(provider.env)!); const service = f.service();
   try {
