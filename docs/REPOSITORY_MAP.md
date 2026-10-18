@@ -2,7 +2,7 @@
 
 更新日期：2026-10-18。
 
-本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置后端与 Room PR1 后端；历史业务链路 HTML 的基线另见文档索引。
+本文回答三个问题：每个模块负责什么、模块里的代码文件做什么、修改某项功能应该从哪里开始。按当前工作区核对，包含 Pi SDK、模型配置后端与 Room 后端 / 统一入口 UI；历史业务链路 HTML 的基线另见文档索引。
 
 仓库目前只有一个 npm 包：根目录 [package.json](../package.json) 定义的 `orbit-desktop`。`src/` 下的目录是这个包内部的逻辑模块，尚未拆成独立发布的 workspace packages。
 
@@ -57,9 +57,10 @@ Orbit/
 | 文件 | 入口 / 对象 | 具体负责什么 |
 | --- | --- | --- |
 | [main.tsx](../src/renderer/main.tsx) | React 根节点 | 加载全局样式，将 `App` 挂载到 HTML 的 `root`，启用 `StrictMode`。 |
-| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。读取并合并 SQLite 业务消息与 Pi 对话投影，订阅实时状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
+| [App.tsx](../src/renderer/App.tsx) | `App` | 主入口、侧栏、对话输入、流式回复、附件选择、文件页、任务详情与取消、设置页和语音面板。通过 `useRoom` 展示唯一的 Room 时间线和历史翻页，保持阅读位置，显示语音来源与中断状态，处理“发送消息”和“仅保存需求”两种入口。当前页面组装主要集中在本文件。 |
 | [TaskBoard.tsx](../src/renderer/TaskBoard.tsx) | `TaskBoard` | 任务看板 / 列表切换、搜索、状态筛选、任务卡片及选中回调。数据由 `App` 传入，不直接查询数据库。 |
-| [useVoice.ts](../src/renderer/useVoice.ts) | `useVoice` | 获取麦克风、启动 AudioWorklet、经 IPC 发送音频帧；播放服务端 24 kHz PCM 音频，管理播放队列、打断、转写列表和资源释放。通过回调通知 `App` 刷新业务数据。 |
+| [useRoom.ts](../src/renderer/useRoom.ts) | `useRoom` | 订阅 Room 最近页，按消息 ID 合并并按 seq 排序，保留已加载旧页，防止初始 read 覆盖实时事件，管理旧页 cursor 与读取互斥。 |
+| [useVoice.ts](../src/renderer/useVoice.ts) | `useVoice` | 获取麦克风、启动 AudioWorklet、经 IPC 发送音频帧；播放服务端 24 kHz PCM 音频，管理播放队列、打断和资源释放；文字回复时关闭麦克风 track 与帧上传，语音就绪后恢复，手动切回语音复用麦克风；generation 隔离迟到的采集 / IPC 错误。转写由 Room 时间线展示。 |
 | [styles.css](../src/renderer/styles.css) | 全局 CSS | 桌面布局、侧栏、对话、输入框、任务看板、文件、设置、语音面板、弹窗及响应式样式。 |
 | [global.d.ts](../src/renderer/global.d.ts) | `Window.orbit` | 把 `OrbitApi` 声明到浏览器全局类型，只提供 TypeScript 类型，不创建运行时接口。 |
 
@@ -168,7 +169,7 @@ flowchart LR
 
 发送入口是 `App → window.orbit.sendMessage → conversation:send`。主进程先调用 `InteractionService.prepare`，再由 `RoomService.send` 串行化通道并提供最近历史，交给 `PiAgentHost.send` 和子进程中的 `PiSession.send`。
 
-模型调用工具时，`PiSession → worker → host → RoomService.execute → InteractionService.execute → WorkspaceService / FileRoomHistory`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。旧页面另外读取工作空间中的真实任务与系统回执。PR2 使用 `room:state` / `room:read` 的统一投影。
+模型调用工具时，`PiSession → worker → host → RoomService.execute → InteractionService.execute → WorkspaceService / FileRoomHistory`；结果按原路返回模型。对话状态由 worker 推送到主进程，再经 `conversation:state` 到页面。页面通过 `room:state` / `room:read` 读取统一投影，工作空间只提供任务和附件；不再拼接第二份回执。
 
 ### 3.2 直接保存、取消与附件
 
@@ -250,6 +251,7 @@ SQLite 中的业务任务与 Pi 会话分别持久化，没有跨两种存储的
 | [scripts/build-electron.mjs](../scripts/build-electron.mjs) | `npm run build` 的 Electron 阶段 | 用 esbuild 生成 `main.cjs`、`preload.cjs` 和独立 ESM `agent-worker.mjs`。worker 的 npm 包保持外部依赖，保留 Pi 包自身的运行资源。 |
 | [scripts/setup-voice.mjs](../scripts/setup-voice.mjs) | `npm run setup:voice` | 下载固定版本的关键词模型压缩包，校验 SHA-256，解压指定文件到 `assets/voice/`，清理临时目录。 |
 | [scripts/smoke.mjs](../scripts/smoke.mjs) | `npm run test:desktop` | 用 Playwright 启动真实 Electron 和 Pi worker，以临时数据目录和本机模型桩验证聊天、工具保存、取消、重启恢复、停止、未配置模型时直接保存，以及语音设置入口。截图保存在 `artifacts/`。 |
+| [scripts/room-ui-smoke.mjs](../scripts/room-ui-smoke.mjs) | `npm run test:desktop` 的第三阶段 | 真实 Electron / preload / Room / Pi，离线控制语音状态与模拟麦克风：统一历史、翻页位置、回执去重、旧页保留、暂停和手动切回、旧音频错误隔离、资源释放。 |
 | [scripts/model-smoke.mjs](../scripts/model-smoke.mjs) | `npm run test:desktop` 的第二阶段 | 通过真实 preload / IPC 验证模型配置增删改查、系统加密、连接测试、切换和重启、回复中互斥；临时 Codex 文件用于检测、过期拒绝与只读验证。不调用真实云端模型。 |
 | [scripts/codex-live-smoke.mjs](../scripts/codex-live-smoke.mjs) | `node scripts/codex-live-smoke.mjs` | 显式联网验证：只读用户 Codex 登录，在隔离 Orbit 目录中通过真实 Electron UI / IPC 测试连接、流式回复、重启续聊和任务查询工具；核对凭据文件未变和 token 未入库。消耗真实订阅额度，不属于 CI。 |
 | [scripts/room-live-smoke.mjs](../scripts/room-live-smoke.mjs) | `node scripts/room-live-smoke.mjs` | 显式联网：真实 Codex / Qwen 双向上下文、历史工具、语音暂停恢复、重启、凭据隔离；临时数据和 macOS 合成音频，不采集真实麦克风。 |
